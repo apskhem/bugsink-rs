@@ -1,0 +1,36 @@
+[package]
+name = "bugsink-server"
+description = "The `bugsink` binary and everything behind it: ingest, digest, grouping, jobs, UI API, static frontend."
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "bugsink"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+brotli.workspace = true
+bugsink-db.workspace = true
+bytes.workspace = true
+chrono.workspace = true
+clap.workspace = true
+fancy-regex.workspace = true
+flate2.workspace = true
+futures.workspace = true
+rand.workspace = true
+regex.workspace = true
+semver.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tower-http.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+unicode-normalization.workspace = true
+uuid.workspace = true

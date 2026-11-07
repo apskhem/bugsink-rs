@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = ["bugsink-*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+# internal
+bugsink-db = { path = "bugsink-db" }
+
+# external
+anyhow = "1"
+axum = "0.8"
+brotli = "8"
+bytes = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4.6", features = ["derive", "env"] }
+fancy-regex = "0.14"
+flate2 = "1"
+futures = "0.3"
+rand = "0.9"
+regex = "1"
+semver = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["raw_value", "preserve_order"] }
+sha2 = "0.10"
+sqlx = { version = "0.9", default-features = false, features = ["postgres", "runtime-tokio", "tls-rustls", "macros", "migrate", "json", "chrono", "uuid"] }
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace", "limit"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unicode-normalization = "0.1"
+uuid = { version = "1", features = ["v4", "serde"] }
