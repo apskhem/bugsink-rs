@@ -3,10 +3,11 @@
 use bugsink_db::{Postgres, Transaction};
 use crate::grouping::main_exception;
 use crate::grouping::py::{py_str, take_chars, truthy};
-use serde_json::{Map, Value};
+use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
 use super::StoredEvent;
+use super::user_agent;
 
 const MAX_EVENT_TAGS: usize = 100;
 
@@ -16,6 +17,39 @@ fn path<'v>(data: &'v Value, keys: &[&str]) -> Option<&'v Value> {
         cur = cur.as_object()?.get(*k)?;
     }
     (!cur.is_null()).then_some(cur)
+}
+
+/// `get_contexts_enriched_with_ua`: the event's contexts, with `browser`, `os` and `device` derived from the request's
+/// User-Agent header where the SDK didn't send them. If that fails, the contexts as they are.
+pub fn contexts_enriched_with_user_agent(data: &Value) -> Value {
+    let mut contexts = data.get("contexts").filter(|c| c.is_object()).cloned().unwrap_or_else(|| json!({}));
+    let headers = data.get("request").filter(|r| r.is_object()).and_then(|r| r.get("headers")).filter(|h| h.is_object());
+    let ua = match headers.and_then(|h| h.get("User-Agent")) {
+        None | Some(Value::Null) => return contexts,
+        Some(Value::Array(values)) => match values.first() {
+            None => return contexts,
+            Some(first) => first, // assumed to be the only one
+        },
+        Some(ua) => ua,
+    };
+    let parsed = match ua.as_str().ok_or("TypeError: user agent is not a string").and_then(|ua| {
+        user_agent::parse(ua).map_err(|e| e.0)
+    }) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            tracing::warn!(user_agent = %ua, error, "failed to enrich contexts with User-Agent info");
+            return contexts;
+        }
+    };
+    let contexts_map = contexts.as_object_mut().expect("object");
+    contexts_map
+        .entry("browser")
+        .or_insert_with(|| json!({"name": parsed.browser_family, "version": parsed.browser_version}));
+    contexts_map.entry("os").or_insert_with(|| json!({"name": parsed.os_family, "version": parsed.os_version}));
+    contexts_map.entry("device").or_insert_with(|| {
+        json!({"family": parsed.device_family, "model": parsed.device_model, "brand": parsed.device_brand})
+    });
+    contexts
 }
 
 /// `value not in [None, ""]`
@@ -58,9 +92,7 @@ fn deduce_tags(data: &Value) -> Map<String, Value> {
         tags.insert("handled".into(), convert(v));
     }
 
-    // TODO(parity): upstream fills contexts.browser/os from request.headers.User-Agent when absent.
-    let empty = Value::Object(Map::new());
-    let contexts = data.get("contexts").filter(|c| c.is_object()).unwrap_or(&empty);
+    let contexts = &contexts_enriched_with_user_agent(data);
     for (tag, keys) in [
         ("trace", ["trace", "trace_id"]),
         ("trace.span", ["trace", "span_id"]),

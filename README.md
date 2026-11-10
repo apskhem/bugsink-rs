@@ -27,22 +27,24 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
 - `grouping.sh`: grouping keys, issue titles and denormalized fields for ~400 edge-case events, compared with
   upstream's own functions. Grouping keys must match byte-for-byte, or new events would open duplicate issues.
 - `digest.sh`: a scripted sequence of ~200 events plus user actions (resolve, resolve-by-next-release, resolve-in-release,
-  mute for a time and until a volume of events, grouping-mechanism upgrade, retention changes that force eviction incl. of `never_evict` events and zero
-  retention) digested four ways: upstream only, bugsink-rs only, bugsink-rs then upstream on the same database, and
+  mute for a time and until a volume of events, grouping-mechanism upgrade, retention changes that force eviction incl.
+  of `never_evict` events and zero retention) digested four ways: upstream only, bugsink-rs only, bugsink-rs then upstream on the same database, and
   upstream then bugsink-rs. The four databases are compared row by row, and so is every alert sent along the way: emails
   (by the members' notification preferences) and messaging webhooks go to a capture server (`capture.py`) and must be
   identical. All of it is done once with default settings and once with tight quotas (`MAX_EVENTS_PER_*`,
   `MAX_EMAILS_PER_MONTH`). Telegram (whose API URL is fixed) is covered by unit tests against upstream's output instead.
+- `user_agents.sh`: the browser/OS/device contexts (and so tags) derived from a request's User-Agent header, for the
+  ~30,000 user agents in uap-core's test suite plus malformed inputs, compared with upstream's own function. The
+  parser data (`bugsink-server/src/digest/ua_regexes.json`) is exported from the upstream image.
 
 ### Not yet ported (upstream behaviour missing)
 
 In order of importance for production use (each has a `TODO(parity)` at the spot it belongs):
 
-1. Browser/OS **tags derived from the User-Agent** header.
-2. Minidumps, sourcemaps/debug files, CSP reports, `VALIDATE_ON_DIGEST`, file-based event storage (eviction deletes
+1. Minidumps, sourcemaps/debug files, CSP reports, `VALIDATE_ON_DIGEST`, file-based event storage (eviction deletes
    such events' rows but not their files).
-3. The `MAX_RETENTION_PER_PROJECT_EVENT_COUNT` and `TIME_ZONE` settings (dates in alerts are in UTC).
-4. Everything the UI does (resolve, mute, delete, members, messaging service setup and test messages, ...), and the UI
+2. The `MAX_RETENTION_PER_PROJECT_EVENT_COUNT` and `TIME_ZONE` settings (dates in alerts are in UTC).
+3. Everything the UI does (resolve, mute, delete, members, messaging service setup and test messages, ...), and the UI
    API's authentication (see `bugsink-server/src/api.rs`).
 
 Known deliberate difference: an envelope whose event payload is not valid JSON gets a 400 at ingest. Upstream returns
@@ -104,6 +106,6 @@ The UI API has no authentication yet, which is why `serve` binds to localhost by
 1. Bump the image in `tools/parity/*.sh`. Regenerate `bugsink-db/upstream/` from a fresh `bugsink-manage migrate` on
    Postgres (`pg_dump --schema-only`; `--data-only --inserts` for `django_migrations`, `django_content_type` and
    `auth_permission`; the sorted `django_migrations` list).
-2. Diff upstream's `ingest/`, `issues/`, `events/`, `releases/`, `tags/` and `sentry/` between the versions and port
-   the changes.
-3. Run both parity scripts.
+2. Diff upstream's `ingest/`, `issues/`, `events/`, `releases/`, `tags/`, `alerts/`, `phonehome/` and `sentry/` between
+   the versions and port the changes. Re-export the User-Agent data with `tools/parity/export_ua_regexes.py`.
+3. Run all parity scripts.

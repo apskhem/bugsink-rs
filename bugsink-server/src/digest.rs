@@ -6,16 +6,20 @@
 //! event rows incl. retention irrelevance, hourly counts, releases (incl. "resolved by next release"), regressions +
 //! reopen, time-based unmute, FIRST_SEEN/REGRESSED/UNMUTED/NEXT_MATERIALIZED turning points, tags, eviction (incl.
 //! zero retention), installation/project quotas (`crate::quota`), alerts (enqueued for `crate::alerts`), volume-based
-//! unmute.
+//! unmute, browser/OS tags from the User-Agent header.
 //!
 //! TODO(parity), in order of importance for running in production:
-//! - browser/os tags derived from the User-Agent header (needs the same ua-parser data as upstream)
 //! - minidumps, `VALIDATE_ON_DIGEST`, file-based event storage
 
 mod counts;
 mod releases;
 pub mod retention;
 mod tags;
+mod user_agent;
+
+/// For `tools/parity/user_agents.sh`.
+#[doc(hidden)]
+pub use tags::contexts_enriched_with_user_agent;
 
 use bugsink_db::{PgPool, Postgres, Transaction, TurningPointKind};
 use chrono::{DateTime, TimeDelta, Utc};

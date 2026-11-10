@@ -134,6 +134,14 @@ actions = {
     190: "UPDATE projects_project SET retention_max_event_count = 3 WHERE id = 2",
 }
 
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.71 Safari/537.36",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_1_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.1.2 "
+    "Mobile/15E148 Safari/604.1",
+    "Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "python-requests/2.31.0",
+    "curl/8.4.0",
+]
 event_ids = []
 for i in range(200):
     if i in actions:
@@ -177,6 +185,8 @@ for i in range(200):
     if random.random() < 0.3:
         event["timestamp"] = random.choice([1793491200.25, "2026-11-01T01:02:03Z", "2026-11-01 01:02:03"])
     event["environment"] = random.choice(["production", "staging", ""])
+    if i % 3 == 0:  # browser/os tags derived from the User-Agent (unless contexts has them); no randomness used here
+        event.setdefault("request", {})["headers"] = {"User-Agent": USER_AGENTS[i % len(USER_AGENTS)]}
 
     event_id = uuid.UUID(int=random.getrandbits(128)).hex
     if i in (33, 77):
