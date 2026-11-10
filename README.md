@@ -37,15 +37,40 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
   ~30,000 user agents in uap-core's test suite plus malformed inputs, compared with upstream's own function. The
   parser data (`bugsink-server/src/digest/ua_regexes.json`) is exported from the upstream image.
 
+### Status
+
+Ported and verified: ingest (envelope/store, quotas and 429s) and digest (grouping, issues, releases, regressions,
+time- and volume-based unmute, tags incl. User-Agent-derived ones, hourly counts, eviction and retention), alerts by
+email and messaging services, and the database bootstrap/version check. bugsink-rs can take over ingestion and
+digestion of an upstream installation today; viewing and managing issues still needs upstream's UI (not at the same
+time, see below).
+
 ### Not yet ported (upstream behaviour missing)
 
-In order of importance for production use (each has a `TODO(parity)` at the spot it belongs):
+In order of importance for production use (code-level gaps also have a `TODO(parity)` where they belong):
 
-1. Minidumps, sourcemaps/debug files, CSP reports, `VALIDATE_ON_DIGEST`, file-based event storage (eviction deletes
-   such events' rows but not their files).
-2. The `MAX_RETENTION_PER_PROJECT_EVENT_COUNT` and `TIME_ZONE` settings (dates in alerts are in UTC).
-3. Everything the UI does (resolve, mute, delete, members, messaging service setup and test messages, ...), and the UI
-   API's authentication (see `bugsink-server/src/api.rs`).
+1. **Authentication and the UI's API.** `/api/v1` is read-only (projects, issues, events) and has no authentication,
+   which is why `serve` binds to localhost. Missing:
+   - accounts: login/logout on upstream's session table, CSRF, signup, email confirmation, password reset,
+     preferences, change password; membership/permission checks on every endpoint
+   - issue actions: resolve (also by next release / in a release), mute for/until, unmute, delete; bulk actions;
+     search (`q=`) and the open/resolved/muted/all tabs; tags, history (turning points, comments), groupings and
+     sparkline counts per issue
+   - projects, teams and memberships: create/edit/delete, invitations, roles, alert settings; messaging service
+     setup and test messages; SDK setup pages
+   - installation: users admin, auth tokens, settings and counts pages
+2. **Frontend**: not started (`frontend/` holds only the plan; framework not chosen).
+3. **Background jobs** besides digest, alerts and zero-retention deletion: deferred deletion of issues, projects and
+   events (`delete_*_deps`); tag vacuuming (`vacuum_tagvalues`, `vacuum_tagkeys`, `vacuum_eventless_issuetags`);
+   invitation, signup confirmation, password reset and welcome emails; phone-home.
+4. **Upstream's REST API** (`/api/canonical/0/`, with auth tokens) for scripts and integrations.
+5. **Ingest extras**: minidumps, sourcemap and debug-file uploads (`chunk-upload`, `artifactbundle/assemble`,
+   `difs/assemble`) and applying them to stack traces, CSP reports (`/security/`), `VALIDATE_ON_DIGEST`, file-based
+   event storage (eviction deletes such events' rows but not their files), `X-Forwarded-For` behind a proxy.
+6. **Settings**: `MAX_RETENTION_PER_PROJECT_EVENT_COUNT`, `TIME_ZONE` (dates in alerts are UTC).
+7. **Operations**: upstream's `/health/ready` (we have `/api/v1/health`) and its management commands for cleanup and
+   maintenance (`vacuum*`, `delete_old_events`, `cleanup_*`, `make_consistent`, `create_auth_token`, ...); we have
+   `migrate`, `create-project`, `serve` and `worker`.
 
 Known deliberate difference: an envelope whose event payload is not valid JSON gets a 400 at ingest. Upstream returns
 200 and drops the event during digest.
