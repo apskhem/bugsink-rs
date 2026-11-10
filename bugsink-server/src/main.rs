@@ -4,8 +4,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use axum::Router;
 use bugsink_db::PgPool;
-use bugsink_server::quota::QuotaSettings;
-use bugsink_server::{api, digest, grouping, ingest, tasks};
+use bugsink_server::{Settings, api, grouping, ingest, job_registry, tasks};
 use clap::{Args, Parser, Subcommand};
 use tokio::sync::watch;
 use tower_http::services::{ServeDir, ServeFile};
@@ -25,9 +24,9 @@ struct Cli {
     #[arg(long, env = "BUGSINK_ALLOW_NEWER_UPSTREAM_SCHEMA", default_value_t = false)]
     allow_newer_upstream_schema: bool,
 
-    /// Ingestion quotas; same environment variables and defaults as upstream.
+    /// Quotas, alerts, ...: same environment variables and defaults as upstream.
     #[command(flatten)]
-    quotas: QuotaSettings,
+    settings: Settings,
 
     #[command(subcommand)]
     command: Command,
@@ -46,11 +45,7 @@ enum Command {
     /// (bsrs_*) migrations.
     Migrate,
     /// Create a project and print its DSN. Stopgap until the UI can do it.
-    CreateProject {
-        name: String,
-        #[arg(long, env = "BUGSINK_BASE_URL", default_value = "http://localhost:8000")]
-        base_url: String,
-    },
+    CreateProject { name: String },
 }
 
 #[derive(Args)]
@@ -91,27 +86,21 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Migrate => Ok(()),
-        Command::Serve(args) => serve(pool, args, cli.quotas).await,
+        Command::Serve(args) => serve(pool, args, cli.settings).await,
         Command::Worker { workers } => {
             let (shutdown_tx, shutdown_rx) = watch::channel(false);
             tokio::spawn(async move {
                 shutdown_signal().await;
                 let _ = shutdown_tx.send(true);
             });
-            tasks::run_workers(pool, registry(cli.quotas), workers, shutdown_rx).await;
+            tasks::run_workers(pool, job_registry(&cli.settings), workers, shutdown_rx).await;
             Ok(())
         }
-        Command::CreateProject { name, base_url } => create_project(&pool, &name, &base_url).await,
+        Command::CreateProject { name } => create_project(&pool, &name, cli.settings.alerts.base_url()).await,
     }
 }
 
-fn registry(quotas: QuotaSettings) -> tasks::Registry {
-    tasks::Registry::default()
-        .register(digest::JOB_KIND, move |pool, payload| digest::handle_job(pool, payload, quotas))
-        .register(digest::retention::DELETE_BY_AGE_JOB_KIND, digest::retention::handle_delete_by_age_job)
-}
-
-async fn serve(pool: PgPool, args: ServeArgs, quotas: QuotaSettings) -> anyhow::Result<()> {
+async fn serve(pool: PgPool, args: ServeArgs, settings: Settings) -> anyhow::Result<()> {
     let index = args.static_dir.join("index.html");
     if !index.exists() {
         tracing::warn!(path = %index.display(), "frontend not built; only the API will be useful");
@@ -119,14 +108,14 @@ async fn serve(pool: PgPool, args: ServeArgs, quotas: QuotaSettings) -> anyhow::
     let frontend = ServeDir::new(&args.static_dir).fallback(ServeFile::new(index));
 
     let app = Router::new()
-        .merge(ingest::router(pool.clone(), args.max_body_bytes, quotas))
+        .merge(ingest::router(pool.clone(), args.max_body_bytes, settings.quotas))
         .merge(api::router(pool.clone()))
         .fallback_service(frontend)
         .layer(TraceLayer::new_for_http());
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let workers = (args.workers > 0)
-        .then(|| tokio::spawn(tasks::run_workers(pool, registry(quotas), args.workers, shutdown_rx)));
+        .then(|| tokio::spawn(tasks::run_workers(pool, job_registry(&settings), args.workers, shutdown_rx)));
 
     let listener = tokio::net::TcpListener::bind(args.bind).await.with_context(|| format!("binding {}", args.bind))?;
     tracing::info!(addr = %args.bind, workers = args.workers, "listening");

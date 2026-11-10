@@ -5,11 +5,10 @@
 //! Ported: grouping (incl. mechanism transition window and legacy attach), issue/project counters and digest orders,
 //! event rows incl. retention irrelevance, hourly counts, releases (incl. "resolved by next release"), regressions +
 //! reopen, time-based unmute, FIRST_SEEN/REGRESSED/UNMUTED/NEXT_MATERIALIZED turning points, tags, eviction (incl.
-//! zero retention), installation/project quotas (`crate::quota`).
+//! zero retention), installation/project quotas (`crate::quota`), alerts (enqueued for `crate::alerts`).
 //!
 //! TODO(parity), in order of importance for running in production:
 //! - volume-based unmute (`unmute_on_volume_based_conditions`, `next_unmute_check`)
-//! - alerts (new issue / regression / unmute)
 //! - browser/os tags derived from the User-Agent header (needs the same ua-parser data as upstream)
 //! - minidumps, `VALIDATE_ON_DIGEST`, file-based event storage
 
@@ -25,6 +24,7 @@ use serde_json::{Value, json};
 use sqlx::Row;
 use uuid::Uuid;
 
+use crate::alerts::{self, Alert};
 use crate::grouping::py::{isoformat, json_dumps, py_str, take_chars, truthy};
 use crate::grouping::{self, GroupingError, KeyWithMechanism};
 use crate::protocol::event::parse_timestamp;
@@ -96,6 +96,9 @@ pub(crate) struct Project {
     pub has_releases: bool,
     retention_max_event_count: i32,
     quota: QuotaState,
+    alert_on_new_issue: bool,
+    alert_on_regression: bool,
+    alert_on_unmute: bool,
     grouping_mechanism: String,
     previous_grouping_mechanism: Option<String>,
     grouping_mechanism_upgraded_at: Option<DateTime<Utc>>,
@@ -238,13 +241,17 @@ pub async fn digest(
         insert_turning_point(&mut tx, project.id, issue.id, Some(event.id), job.ingested_at, TurningPointKind::FirstSeen, "{}")
             .await?;
         never_evict = true;
-        // TODO(parity): new-issue alert
+        if project.alert_on_new_issue {
+            alerts::enqueue(&mut tx, issue.id, Alert::NewIssue).await?;
+        }
     } else {
         if releases::issue_is_regression(&mut tx, &project, &issue, &event.release).await? {
             insert_turning_point(&mut tx, project.id, issue.id, Some(event.id), job.ingested_at, TurningPointKind::Regressed, "{}")
                 .await?;
             never_evict = true;
-            // TODO(parity): regression alert
+            if project.alert_on_regression {
+                alerts::enqueue(&mut tx, issue.id, Alert::Regression).await?;
+            }
             issue.reopen();
         }
         if let Some(unmute_after) = issue.unmute_after.filter(|after| issue.is_muted && digested_at > *after) {
@@ -253,7 +260,10 @@ pub async fn digest(
             insert_turning_point(&mut tx, project.id, issue.id, Some(event.id), job.ingested_at, TurningPointKind::Unmuted, &json_dumps(&metadata))
                 .await?;
             never_evict = true; // events that trigger a turning point are kept
-            // TODO(parity): unmute alert
+            if project.alert_on_unmute {
+                let unmute_reason = alerts::unmute_reason_mute_for(unmute_after);
+                alerts::enqueue(&mut tx, issue.id, Alert::Unmute { unmute_reason }).await?;
+            }
         }
     }
     // TODO(parity): count_issue_periods_and_act_on_it (volume-based unmute)
@@ -277,6 +287,7 @@ async fn lock_project(tx: &mut Transaction<'_, Postgres>, project_id: i64) -> sq
     let row = sqlx::query(
         "SELECT id, digested_event_count, stored_event_count, issue_count, has_releases, retention_max_event_count,
                 next_quota_check, quota_exceeded_until, quota_exceeded_reason,
+                alert_on_new_issue, alert_on_regression, alert_on_unmute,
                 grouping_mechanism, previous_grouping_mechanism, grouping_mechanism_upgraded_at
          FROM projects_project WHERE id = $1 AND NOT is_deleted FOR UPDATE",
     )
@@ -295,6 +306,9 @@ async fn lock_project(tx: &mut Transaction<'_, Postgres>, project_id: i64) -> sq
             exceeded_until: r.get("quota_exceeded_until"),
             exceeded_reason: r.get("quota_exceeded_reason"),
         },
+        alert_on_new_issue: r.get("alert_on_new_issue"),
+        alert_on_regression: r.get("alert_on_regression"),
+        alert_on_unmute: r.get("alert_on_unmute"),
         grouping_mechanism: r.get("grouping_mechanism"),
         previous_grouping_mechanism: r.get("previous_grouping_mechanism"),
         grouping_mechanism_upgraded_at: r.get("grouping_mechanism_upgraded_at"),

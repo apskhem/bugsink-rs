@@ -28,20 +28,23 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
   upstream's own functions. Grouping keys must match byte-for-byte, or new events would open duplicate issues.
 - `digest.sh`: a scripted sequence of ~200 events plus user actions (resolve, resolve-by-next-release, resolve-in-release,
   mute-until, grouping-mechanism upgrade, retention changes that force eviction incl. of `never_evict` events and zero
-  retention) digested four ways, once with default settings and once with tight quotas (`MAX_EVENTS_PER_*`): upstream only, bugsink-rs only, bugsink-rs then
-  upstream on the same database, and upstream then bugsink-rs. The four databases are compared row by row.
+  retention) digested four ways: upstream only, bugsink-rs only, bugsink-rs then upstream on the same database, and
+  upstream then bugsink-rs. The four databases are compared row by row, and so is every alert sent along the way: emails
+  (by the members' notification preferences) and messaging webhooks go to a capture server (`capture.py`) and must be
+  identical. All of it is done once with default settings and once with tight quotas (`MAX_EVENTS_PER_*`,
+  `MAX_EMAILS_PER_MONTH`). Telegram (whose API URL is fixed) is covered by unit tests against upstream's output instead.
 
 ### Not yet ported (upstream behaviour missing)
 
 In order of importance for production use (each has a `TODO(parity)` at the spot it belongs):
 
-1. **Alerts** (new issue, regression, unmute) by email and messaging services.
-2. **Volume-based unmute** conditions.
-3. Browser/OS **tags derived from the User-Agent** header.
-4. Minidumps, sourcemaps/debug files, CSP reports, `VALIDATE_ON_DIGEST`, file-based event storage (eviction deletes
+1. **Volume-based unmute** conditions.
+2. Browser/OS **tags derived from the User-Agent** header.
+3. Minidumps, sourcemaps/debug files, CSP reports, `VALIDATE_ON_DIGEST`, file-based event storage (eviction deletes
    such events' rows but not their files).
-5. The `MAX_RETENTION_PER_PROJECT_EVENT_COUNT` setting (installation-wide cap on per-project retention).
-6. Everything the UI does (resolve, mute, delete, members, ...), and the UI API's authentication (see `bugsink-server/src/api.rs`).
+4. The `MAX_RETENTION_PER_PROJECT_EVENT_COUNT` and `TIME_ZONE` settings (dates in alerts are in UTC).
+5. Everything the UI does (resolve, mute, delete, members, messaging service setup and test messages, ...), and the UI
+   API's authentication (see `bugsink-server/src/api.rs`).
 
 Known deliberate difference: an envelope whose event payload is not valid JSON gets a 400 at ingest. Upstream returns
 200 and drops the event during digest.
@@ -60,6 +63,7 @@ bugsink-server/        the `bugsink` binary (src/main.rs: CLI, config, HTTP, in-
                        eviction (retention.rs)
   src/ingest.rs        POST /api/{project_id}/envelope/ and /store/ (auth, quota 429s, decode, enqueue)
   src/quota.rs         installation/project quotas over rolling windows (counted in digest, enforced in both)
+  src/alerts           alert emails (upstream's templates) and messaging services (Slack, Discord, ...), as jobs
   src/api.rs           /api/v1/... JSON API for the frontend
   examples/            parity drivers used by tools/parity/
 frontend/              CSR app (separate JS workspace), built into frontend/dist/; see frontend/README.md
@@ -83,8 +87,13 @@ cargo run -- serve                         # HTTP on 127.0.0.1:8000 + 4 workers
 
 Ingestion quotas use upstream's environment variables and defaults: `MAX_EVENTS_PER_PROJECT_PER_5_MINUTES` (1000),
 `MAX_EVENTS_PER_PROJECT_PER_HOUR` (5000), `MAX_EVENTS_PER_PROJECT_PER_MONTH` (1000000), and the installation-wide
-`MAX_EVENTS_PER_5_MINUTES`, `MAX_EVENTS_PER_HOUR`, `MAX_EVENTS_PER_MONTH` (same defaults). Give `serve` and `worker`
-the same values.
+`MAX_EVENTS_PER_5_MINUTES`, `MAX_EVENTS_PER_HOUR`, `MAX_EVENTS_PER_MONTH` (same defaults).
+
+Alerts too: `BASE_URL` (for links), `SITE_TITLE`; email via `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_HOST_USER`,
+`EMAIL_HOST_PASSWORD`, `EMAIL_USE_TLS`/`EMAIL_USE_SSL`, `EMAIL_TIMEOUT`, `DEFAULT_FROM_EMAIL`, `MAX_EMAILS_PER_HOUR`,
+`MAX_EMAILS_PER_MONTH` (without `EMAIL_HOST`, emails are only logged); messaging webhooks are restricted by
+`ALERTS_WEBHOOK_OUTBOUND_MODE`, `ALERTS_WEBHOOK_ALLOW_LIST`, `ALERTS_WEBHOOK_DENY_LIST` and
+`ALERTS_WEBHOOK_DENY_NON_GLOBAL`. `bugsink --help` lists them all. Give `serve` and `worker` the same values.
 
 Don't run upstream and bugsink-rs against the same database at the same time: each assumes it is the only digester.
 

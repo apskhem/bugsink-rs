@@ -231,9 +231,12 @@ async fn evict_for_epoch_and_irrelevance(
     if limit <= 0 {
         return Ok(EvictionCounts::default());
     }
+    // Ties on digest_order are broken however the plan happens to read the rows (as upstream's). Not preparing the
+    // statement gets the same per-call plan as upstream's literal SQL rather than a generic one.
     let mut q = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT id FROM events_event WHERE {filter} ORDER BY digest_order LIMIT {limit}"
     )))
+    .persistent(false)
     .bind(project_id)
     .bind(max_irrelevance);
     if let Some(t) = max_digested_at {

@@ -4,7 +4,14 @@
 SELECT 'project', id, digested_event_count, stored_event_count, issue_count, has_releases, next_quota_check,
        quota_exceeded_until, quota_exceeded_reason
 FROM projects_project ORDER BY id;
-SELECT 'installation', next_quota_check, quota_exceeded_until, quota_exceeded_reason FROM phonehome_installation;
+SELECT 'installation', next_quota_check, quota_exceeded_until, quota_exceeded_reason,
+       regexp_replace(email_quota_usage, '"[0-9T-]+"', '"<period>"', 'g'),
+       (SELECT string_agg(a->>'ok', ',') FROM json_array_elements(email_sending_diagnostics::json->'attempts') a)
+FROM phonehome_installation;
+-- The error message names the address that was posted to, which differs per side.
+SELECT 'messagingservice', id, kind, last_failure_timestamp IS NOT NULL, last_failure_error_type,
+       last_failure_status_code, last_failure_response_text, last_failure_is_json
+FROM alerts_messagingserviceconfig ORDER BY id;
 SELECT 'issue', project_id, digest_order, first_seen, last_seen, digested_event_count, stored_event_count,
        calculated_type, calculated_value, transaction, last_frame_filename, last_frame_module, last_frame_function,
        is_resolved, is_resolved_by_next_release, is_resolved_unconditionally, replace(fixed_at, E'\n', '|'),

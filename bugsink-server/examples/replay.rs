@@ -1,13 +1,13 @@
 //! Replays digest steps (JSONL on stdin, see tools/parity/make_digest_steps.py) through this crate's digest. Jobs that
-//! digest schedules (zero-retention deletion) run right after each step, like upstream's on-commit tasks in eager mode.
+//! digest schedules (zero-retention deletion, alerts) run right after each step, like upstream's on-commit tasks in
+//! eager mode.
 //! Usage: DATABASE_URL=... cargo run -p bugsink-server --example replay < steps.jsonl
-//! Quotas come from the same `MAX_EVENTS_PER_*` environment variables as `bugsink` (and upstream).
+//! Settings (quotas, alerts) come from the same environment variables as `bugsink` (and upstream).
 
 use std::io::BufRead;
 
-use bugsink_server::digest::{DigestError, DigestJob, digest, retention};
-use bugsink_server::quota::QuotaSettings;
-use bugsink_server::tasks;
+use bugsink_server::digest::{DigestError, DigestJob, digest};
+use bugsink_server::{Settings, job_registry, tasks};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use serde_json::Value;
@@ -16,16 +16,15 @@ use sqlx::Executor;
 #[derive(Parser)]
 struct Args {
     #[command(flatten)]
-    quotas: QuotaSettings,
+    settings: Settings,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let quotas = Args::parse().quotas;
+    let settings = Args::parse().settings;
     let pool = bugsink_db::connect(&std::env::var("DATABASE_URL")?, 2).await?;
     bugsink_db::prepare(&pool, false).await?;
-    let registry = tasks::Registry::default()
-        .register(retention::DELETE_BY_AGE_JOB_KIND, retention::handle_delete_by_age_job);
+    let registry = job_registry(&settings);
     for line in std::io::stdin().lock().lines() {
         let step: Value = serde_json::from_str(&line?)?;
         if let Some(sql) = step["sql"].as_str() {
@@ -40,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
             event: step["event"].clone(),
         };
         let digested_at = step["digested_at"].as_str().unwrap().parse::<DateTime<Utc>>()?;
-        match digest(&pool, job, digested_at, &quotas).await {
+        match digest(&pool, job, digested_at, &settings.quotas).await {
             Ok(_) => {}
             Err(DigestError::Drop(reason)) => println!("step {}: dropped: {reason}", step["n"]),
             Err(DigestError::Retry(e)) => anyhow::bail!("step {}: {e:#}", step["n"]),

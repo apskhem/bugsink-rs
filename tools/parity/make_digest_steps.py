@@ -1,5 +1,6 @@
 """Generates tools/parity/digest-steps.jsonl: a deterministic sequence of events to digest, interleaved with SQL
-"user actions" (resolve, mute, grouping-mechanism upgrade, retention changes) applied identically to upstream and to us."""
+"user actions" (resolve, mute, grouping-mechanism upgrade, retention changes) applied identically to upstream and to us.
+Also sets up alert recipients and messaging services."""
 import json
 import random
 import uuid
@@ -26,16 +27,72 @@ def project_sql(pid, mechanism, retention):
 
 # irrelevance_for_retention is random, which would make eviction pick different events on each side. This trigger
 # replaces it with a function of the event_id, so both sides evict the same events. Also on UPDATE: upstream re-saves
-# all fields of never_evict events.
+# all fields of never_evict events. The wide range (0-255) avoids ties: among equally irrelevant events with the same
+# digest_order, which one goes first depends on the physical row order, which differs between the two sides.
 IRRELEVANCE_TRIGGER = [
     "CREATE FUNCTION parity_irrelevance() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
-    "NEW.irrelevance_for_retention := mod(get_byte(decode(md5(NEW.event_id::text), 'hex'), 0), 7); RETURN NEW; END $$",
+    "NEW.irrelevance_for_retention := get_byte(decode(md5(NEW.event_id::text), 'hex'), 0); RETURN NEW; END $$",
     "CREATE TRIGGER parity_irrelevance BEFORE INSERT OR UPDATE ON events_event "
     "FOR EACH ROW EXECUTE FUNCTION parity_irrelevance()",
 ]
 
 steps = [{"sql": project_sql(1, "bugsink-v1", 10000)}, {"sql": project_sql(2, "bugsink-v2", 15)}]
 steps += [{"sql": sql} for sql in IRRELEVANCE_TRIGGER]
+
+# Alerts. Who gets an email: (email, is_active, user pref, project 2 membership (accepted, pref) or None,
+# team membership (accepted, pref) or None, expected to get it) -- the last column is documentation only.
+TEAM = "00000000-0000-0000-0000-00000000a001"
+USERS = [
+    ("u1@example.org", True, True, (True, None), None, True),
+    ("u2@example.org", True, False, (True, None), None, False),
+    ("u3@example.org", True, False, (True, True), None, True),
+    ("u4@example.org", True, True, (True, False), None, False),
+    ("u5@example.org", True, False, (True, None), (True, True), True),
+    ("u6@example.org", True, True, (True, None), (True, False), False),
+    ("u7@example.org", True, True, (True, None), (True, None), True),
+    ("u8@example.org", False, True, (True, None), None, False),  # inactive
+    ("u9@example.org", True, True, (False, None), None, False),  # invitation not accepted
+    ("", True, True, (True, None), None, False),  # no email address
+    ("u11@bugsink.com", True, True, (True, None), None, False),  # refused: not Bugsink's own installation
+    ("u12@example.org", True, False, (True, None), (False, True), False),  # team invitation not accepted
+]
+
+
+def sql_bool(b):
+    return "NULL" if b is None else ("true" if b else "false")
+
+
+steps.append({"sql": "UPDATE projects_project SET alert_on_regression = true, alert_on_unmute = true WHERE id = 1"})
+steps.append({"sql": f"INSERT INTO teams_team (id, name, visibility) VALUES ('{TEAM}', 'team', 1)"})
+steps.append({"sql": "UPDATE projects_project SET alert_on_new_issue = true, alert_on_regression = true, "
+                     f"alert_on_unmute = true, team_id = '{TEAM}', name = 'Shop \"Front\" & <Co>' WHERE id = 2"})
+for uid, (address, active, pref, pm, tm, _) in enumerate(USERS, start=1):
+    steps.append({"sql": "INSERT INTO auth_user (id, password, is_superuser, username, first_name, last_name, email, "
+                         "is_staff, is_active, date_joined, send_email_alerts, theme_preference, language) VALUES "
+                         f"({uid}, '!', false, 'user{uid}', '', '', '{address}', false, {sql_bool(active)}, "
+                         f"'2026-10-01T00:00:00Z', {sql_bool(pref)}, 'system', 'auto')"})
+    steps.append({"sql": "INSERT INTO projects_projectmembership (id, send_email_alerts, role, accepted, project_id, "
+                         f"user_id) VALUES ({uid}, {sql_bool(pm[1])}, 0, {sql_bool(pm[0])}, 2, {uid})"})
+    if tm is not None:
+        steps.append({"sql": "INSERT INTO teams_teammembership (id, send_email_alerts, role, accepted, team_id, user_id) "
+                             f"VALUES ({uid}, {sql_bool(tm[1])}, 0, {sql_bool(tm[0])}, '{TEAM}', {uid})"})
+steps.append({"sql": "INSERT INTO projects_projectmembership (id, send_email_alerts, role, accepted, project_id, "
+                     "user_id) VALUES (100, NULL, 0, true, 1, 1)"})
+
+# Messaging services; the harness replaces @CAPTURE_HTTP@ with the capture server's address as each side sees it.
+SERVICES = [
+    (1, "slack", '{"webhook_url": "http://@CAPTURE_HTTP@/slack/p1"}'),
+    (2, "slack", '{"webhook_url": "http://@CAPTURE_HTTP@/slack/p2"}'),
+    (2, "discord", '{"webhook_url": "http://@CAPTURE_HTTP@/discord"}'),
+    (2, "mattermost", '{"webhook_url": "http://@CAPTURE_HTTP@/mattermost", "channel": "town-square"}'),
+    (2, "msteams", '{"webhook_url": "http://@CAPTURE_HTTP@/msteams"}'),
+    (2, "google_chat", '{"webhook_url": "http://@CAPTURE_HTTP@/google_chat"}'),
+    (2, "custom", '{"webhook_url": "http://@CAPTURE_HTTP@/custom"}'),
+    (2, "slack", '{"webhook_url": "http://@CAPTURE_HTTP@/fail/slack"}'),  # the capture server answers 500
+]
+for sid, (pid, kind, config) in enumerate(SERVICES, start=1):
+    steps.append({"sql": "INSERT INTO alerts_messagingserviceconfig (id, display_name, kind, config, project_id) "
+                         f"VALUES ({sid}, '{kind} {sid}', '{kind}', '{config}', {pid})"})
 
 types = ["ValueError", "KeyError", "TypeError", "ZeroDivisionError", "RuntimeError", "IntegrityError"]
 templates = ["user {} not found", "invalid literal for int(): '{}'", "timeout after {}ms", "row {} missing",

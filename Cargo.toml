@@ -21,8 +21,10 @@ clap = { version = "4.6", features = ["derive", "env"] }
 fancy-regex = "0.14"
 flate2 = "1"
 futures = "0.3"
+lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls", "ring", "webpki-roots", "hostname"] }
 rand = "0.9"
 regex = "1"
+reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
 semver = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["raw_value", "preserve_order"] }
@@ -34,4 +36,5 @@ tower-http = { version = "0.6", features = ["cors", "fs", "trace", "limit"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-normalization = "0.1"
+url = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
