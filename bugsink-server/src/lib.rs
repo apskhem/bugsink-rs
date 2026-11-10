@@ -4,6 +4,7 @@
 pub mod alerts;
 pub mod api;
 pub mod digest;
+mod event_counter;
 pub mod grouping;
 pub mod ingest;
 pub mod protocol;

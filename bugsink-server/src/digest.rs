@@ -5,10 +5,10 @@
 //! Ported: grouping (incl. mechanism transition window and legacy attach), issue/project counters and digest orders,
 //! event rows incl. retention irrelevance, hourly counts, releases (incl. "resolved by next release"), regressions +
 //! reopen, time-based unmute, FIRST_SEEN/REGRESSED/UNMUTED/NEXT_MATERIALIZED turning points, tags, eviction (incl.
-//! zero retention), installation/project quotas (`crate::quota`), alerts (enqueued for `crate::alerts`).
+//! zero retention), installation/project quotas (`crate::quota`), alerts (enqueued for `crate::alerts`), volume-based
+//! unmute.
 //!
 //! TODO(parity), in order of importance for running in production:
-//! - volume-based unmute (`unmute_on_volume_based_conditions`, `next_unmute_check`)
 //! - browser/os tags derived from the User-Agent header (needs the same ua-parser data as upstream)
 //! - minidumps, `VALIDATE_ON_DIGEST`, file-based event storage
 
@@ -25,6 +25,7 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::alerts::{self, Alert};
+use crate::event_counter::{Counted, Period, Threshold, check_for_thresholds};
 use crate::grouping::py::{isoformat, json_dumps, py_str, take_chars, truthy};
 use crate::grouping::{self, GroupingError, KeyWithMechanism};
 use crate::protocol::event::parse_timestamp;
@@ -119,6 +120,7 @@ pub(crate) struct Issue {
     is_muted: bool,
     unmute_on_volume_based_conditions: String,
     unmute_after: Option<DateTime<Utc>>,
+    next_unmute_check: i32,
 }
 
 enum GroupingPath {
@@ -266,7 +268,19 @@ pub async fn digest(
             }
         }
     }
-    // TODO(parity): count_issue_periods_and_act_on_it (volume-based unmute)
+    if let Some(condition) = volume_based_unmute(&mut tx, &mut issue, digested_at).await?
+        && issue.is_muted
+    {
+        issue.unmute();
+        let metadata = json!({"mute_until": condition});
+        insert_turning_point(&mut tx, project.id, issue.id, Some(event.id), job.ingested_at, TurningPointKind::Unmuted, &json_dumps(&metadata))
+            .await?;
+        never_evict = true;
+        if project.alert_on_unmute {
+            let unmute_reason = alerts::unmute_reason_mute_until(&condition);
+            alerts::enqueue(&mut tx, issue.id, Alert::Unmute { unmute_reason }).await?;
+        }
+    }
 
     if never_evict {
         sqlx::query("UPDATE events_event SET never_evict = true WHERE id = $1").bind(event.id).execute(&mut *tx).await?;
@@ -392,7 +406,7 @@ async fn create_grouping(
 
 const ISSUE_STATE_COLUMNS: &str = "id, last_seen, digested_event_count, stored_event_count, calculated_type,
     calculated_value, is_resolved, is_resolved_unconditionally, is_resolved_by_next_release, fixed_at, events_at,
-    is_muted, unmute_on_volume_based_conditions, unmute_after";
+    is_muted, unmute_on_volume_based_conditions, unmute_after, next_unmute_check";
 
 fn issue_from_row(r: &sqlx::postgres::PgRow) -> Issue {
     Issue {
@@ -410,6 +424,7 @@ fn issue_from_row(r: &sqlx::postgres::PgRow) -> Issue {
         is_muted: r.get("is_muted"),
         unmute_on_volume_based_conditions: r.get("unmute_on_volume_based_conditions"),
         unmute_after: r.get("unmute_after"),
+        next_unmute_check: r.get("next_unmute_check"),
     }
 }
 
@@ -481,7 +496,7 @@ async fn save_issue(tx: &mut Transaction<'_, Postgres>, issue: &Issue) -> sqlx::
              last_seen = $2, digested_event_count = $3, stored_event_count = $4, calculated_type = $5,
              calculated_value = $6, is_resolved = $7, is_resolved_unconditionally = $8,
              is_resolved_by_next_release = $9, fixed_at = $10, events_at = $11, is_muted = $12,
-             unmute_on_volume_based_conditions = $13, unmute_after = $14
+             unmute_on_volume_based_conditions = $13, unmute_after = $14, next_unmute_check = $15
          WHERE id = $1",
     )
     .bind(issue.id)
@@ -498,9 +513,46 @@ async fn save_issue(tx: &mut Transaction<'_, Postgres>, issue: &Issue) -> sqlx::
     .bind(issue.is_muted)
     .bind(&issue.unmute_on_volume_based_conditions)
     .bind(issue.unmute_after)
+    .bind(issue.next_unmute_check)
     .execute(&mut **tx)
     .await?;
     Ok(())
+}
+
+/// `count_issue_periods_and_act_on_it`: when a check is due, counts the issue's events against its volume-based unmute
+/// conditions (`[{"period": "hour", "nr_of_periods": 24, "volume": 5}]`) and returns the first one that is met. Runs
+/// after the event is stored, so it counts itself.
+async fn volume_based_unmute(
+    tx: &mut Transaction<'_, Postgres>,
+    issue: &mut Issue,
+    now: DateTime<Utc>,
+) -> Result<Option<Value>, DigestError> {
+    let conditions: Vec<Value> = serde_json::from_str(&issue.unmute_on_volume_based_conditions)
+        .map_err(|e| DigestError::Drop(format!("invalid unmute_on_volume_based_conditions: {e}")))?;
+    if conditions.is_empty() || issue.digested_event_count < issue.next_unmute_check {
+        return Ok(None);
+    }
+    let thresholds = conditions
+        .iter()
+        .map(|c| {
+            Some(Threshold {
+                period: Period::from_name(c.get("period")?.as_str()?)?,
+                nr_of_periods: u32::try_from(c.get("nr_of_periods")?.as_u64()?).ok()?,
+                gte: c.get("volume")?.as_i64()?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| DigestError::Drop(format!("invalid volume-based condition in {:?}", conditions)))?;
+
+    let states = check_for_thresholds(tx, Counted::Issue(issue.id), now, &thresholds, 0).await?;
+    let check_again_after = states.iter().map(|s| s.check_again_after).min().unwrap_or(1).max(1);
+    issue.next_unmute_check =
+        i32::try_from(i64::from(issue.digested_event_count) + check_again_after).unwrap_or(i32::MAX);
+
+    // Several conditions met at once (not possible from the UI) unmute once, for the first.
+    Ok(states.iter().zip(&conditions).find(|(state, _)| state.exceeded).map(|(_, c)| {
+        json!({"period": c["period"], "nr_of_periods": c["nr_of_periods"], "volume": c["volume"]})
+    }))
 }
 
 pub(crate) struct StoredEvent {

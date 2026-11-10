@@ -6,14 +6,15 @@
 //! `quota_exceeded_until` is set on the project or installation row; until then ingest answers 429 and digest drops
 //! events. The count itself is amortized: it only runs again once `next_quota_check` digested events are reached.
 //!
-//! Counting uses `project_digest_order` (last - first + 1 within the window), so evicted events still count.
+//! Counting is `crate::event_counter`'s.
 
 use bugsink_db::{PgPool, Postgres, Transaction};
-use chrono::{DateTime, Months, TimeDelta, Utc};
+use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::Row;
 use uuid::Uuid;
 
+use crate::event_counter::{Counted, Period, Threshold, ThresholdState, check_for_thresholds};
 use crate::grouping::py::json_dumps;
 
 /// Upstream's settings of the same names (`MAX_EVENTS_PER_*`), with upstream's defaults.
@@ -44,48 +45,6 @@ impl Default for QuotaSettings {
             max_events_per_month: 1_000_000,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq)]
-enum Period {
-    Minute,
-    Hour,
-    Month,
-}
-
-impl Period {
-    fn name(self) -> &'static str {
-        match self {
-            Self::Minute => "minute",
-            Self::Hour => "hour",
-            Self::Month => "month",
-        }
-    }
-
-    /// `sub_periods_from_datetime` (dateutil's relativedelta: months clamp to the last day of the month).
-    fn sub(self, dt: DateTime<Utc>, n: u32) -> DateTime<Utc> {
-        match self {
-            Self::Minute => dt - TimeDelta::minutes(n.into()),
-            Self::Hour => dt - TimeDelta::hours(n.into()),
-            Self::Month => dt.checked_sub_months(Months::new(n)).expect("date in range"),
-        }
-    }
-
-    fn add(self, dt: DateTime<Utc>, n: u32) -> DateTime<Utc> {
-        match self {
-            Self::Minute => dt + TimeDelta::minutes(n.into()),
-            Self::Hour => dt + TimeDelta::hours(n.into()),
-            Self::Month => dt.checked_add_months(Months::new(n)).expect("date in range"),
-        }
-    }
-}
-
-/// `(period_name, nr_of_periods, gte_threshold)`: exceeded once the window holds at least `gte` events.
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct Threshold {
-    period: Period,
-    nr_of_periods: u32,
-    gte: i64,
 }
 
 /// Whose events are counted (`QUOTA_THRESHOLDS`' keys).
@@ -185,7 +144,7 @@ pub(crate) async fn count_installation_periods_and_act_on_it(
 
     let thresholds = settings.thresholds(scope);
     if needs_check(&thresholds, digested_event_count, next_quota_check) {
-        let states = check_for_thresholds(tx, scope, now, &thresholds).await?;
+        let states = check_for_thresholds(tx, Counted::Installation, now, &thresholds, 1).await?;
         let (until, reason) = exceeded_until_and_reason(&states);
         let check_again_after = states.iter().map(|s| s.check_again_after).min().unwrap_or(1).max(1);
         sqlx::query(
@@ -222,8 +181,9 @@ pub(crate) async fn count_project_periods_and_act_on_it(
 
     let thresholds = settings.thresholds(scope);
     if needs_check(&thresholds, i64::from(*digested_event_count), i64::from(quota.next_quota_check)) {
-        // Thresholds are "gte", so the event that reaches a quota is still accepted; the door closes after it.
-        let states = check_for_thresholds(tx, scope, now, &thresholds).await?;
+        // Thresholds are "gte", so the event that reaches a quota is still accepted; the door closes after it. The
+        // event isn't stored yet: +1.
+        let states = check_for_thresholds(tx, Counted::Project(project_id), now, &thresholds, 1).await?;
         let (until, reason) = exceeded_until_and_reason(&states);
         // Unlike the installation's, not floored at 1 (as upstream).
         let check_again_after = states.iter().map(|s| s.check_again_after).min().unwrap_or(1);
@@ -244,38 +204,6 @@ fn to_i32(n: i64) -> i32 {
     i32::try_from(n).unwrap_or(if n < 0 { 0 } else { i32::MAX })
 }
 
-struct ThresholdState {
-    exceeded: bool,
-    below_threshold_from: Option<DateTime<Utc>>,
-    check_again_after: i64,
-    threshold: Threshold,
-}
-
-/// `check_for_thresholds` (`check_for_thresholds_on_installation` for the installation), with `add_for_current=1`:
-/// the event being digested is not stored yet but will be.
-async fn check_for_thresholds(
-    tx: &mut Transaction<'_, Postgres>,
-    scope: Scope,
-    now: DateTime<Utc>,
-    thresholds: &[Threshold],
-) -> sqlx::Result<Vec<ThresholdState>> {
-    let mut states = Vec::with_capacity(thresholds.len());
-    for &threshold in thresholds {
-        let since = threshold.period.sub(now, threshold.nr_of_periods);
-        let total = 1 + events_in_period(tx, scope, since).await?;
-        let exceeded = total >= threshold.gte;
-        let below_threshold_from = if exceeded {
-            // The window's oldest event plus the window: the moment the count drops below the threshold again.
-            let start = oldest_in_period(tx, scope, since).await?.unwrap_or(now);
-            Some(threshold.period.add(start, threshold.nr_of_periods))
-        } else {
-            None
-        };
-        states.push(ThresholdState { exceeded, below_threshold_from, check_again_after: threshold.gte - total, threshold });
-    }
-    Ok(states)
-}
-
 /// `max((below_from, threshold) for exceeded ones)`, with the threshold as upstream's JSON reason.
 fn exceeded_until_and_reason(states: &[ThresholdState]) -> (Option<DateTime<Utc>>, String) {
     let key = |s: &&ThresholdState| (s.below_threshold_from, s.threshold.period.name(), s.threshold.nr_of_periods, s.threshold.gte);
@@ -288,68 +216,13 @@ fn exceeded_until_and_reason(states: &[ThresholdState]) -> (Option<DateTime<Utc>
     }
 }
 
-/// `get_total_events_in_period`, summed per project for the installation (`project_digest_order` is per project).
-async fn events_in_period(tx: &mut Transaction<'_, Postgres>, scope: Scope, since: DateTime<Utc>) -> sqlx::Result<i64> {
-    let projects = match scope {
-        Scope::Installation => "",
-        Scope::Project(_) => "WHERE p.id = $2",
-    };
-    let q = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT COALESCE(SUM(l.o - f.o + 1), 0)::bigint FROM projects_project p
-         CROSS JOIN LATERAL (
-             SELECT project_digest_order AS o FROM events_event
-             WHERE project_id = p.id AND digested_at >= $1 AND project_digest_order IS NOT NULL
-             ORDER BY digested_at, project_digest_order LIMIT 1) f
-         CROSS JOIN LATERAL (
-             SELECT project_digest_order AS o FROM events_event
-             WHERE project_id = p.id AND digested_at >= $1 AND project_digest_order IS NOT NULL
-             ORDER BY digested_at DESC, project_digest_order DESC LIMIT 1) l
-         {projects}"
-    )))
-    .bind(since);
-    match scope {
-        Scope::Installation => q,
-        Scope::Project(id) => q.bind(id),
-    }
-    .fetch_one(&mut **tx)
-    .await
-}
-
-async fn oldest_in_period(
-    tx: &mut Transaction<'_, Postgres>,
-    scope: Scope,
-    since: DateTime<Utc>,
-) -> sqlx::Result<Option<DateTime<Utc>>> {
-    let project = match scope {
-        Scope::Installation => "",
-        Scope::Project(_) => " AND project_id = $2",
-    };
-    let q = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "SELECT MIN(digested_at) FROM events_event WHERE digested_at >= $1{project}"
-    )))
-    .bind(since);
-    match scope {
-        Scope::Installation => q,
-        Scope::Project(id) => q.bind(id),
-    }
-    .fetch_one(&mut **tx)
-    .await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
+    use chrono::{TimeDelta, TimeZone};
 
     fn at(s: &str) -> DateTime<Utc> {
         s.parse().unwrap()
-    }
-
-    #[test]
-    fn months_clamp_like_relativedelta() {
-        assert_eq!(Period::Month.sub(at("2026-03-31T10:00:00Z"), 1), at("2026-02-28T10:00:00Z"));
-        assert_eq!(Period::Month.add(at("2026-01-31T10:00:00Z"), 1), at("2026-02-28T10:00:00Z"));
-        assert_eq!(Period::Minute.sub(at("2026-03-31T10:00:00Z"), 5), at("2026-03-31T09:55:00Z"));
     }
 
     #[test]

@@ -23,7 +23,7 @@ use serde_json::Value;
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::grouping::py::splitlines;
+use crate::grouping::py::{py_str, splitlines};
 use crate::tasks;
 
 pub use email::EmailSettings;
@@ -103,6 +103,18 @@ pub(crate) fn unmute_reason_mute_for(unmute_after: DateTime<Utc>) -> String {
     format!(
         "An event was observed after the mute-deadline of {} and the issue was unmuted.",
         unmute_after.format("%-d %b %-H:%M")
+    )
+}
+
+/// `format_unmute_reason` for a volume-based unmute (`mute_until`, `{"period", "nr_of_periods", "volume"}`).
+pub(crate) fn unmute_reason_mute_until(condition: &Value) -> String {
+    let nr_of_periods = &condition["nr_of_periods"];
+    let plural_s = if nr_of_periods.as_f64() == Some(1.0) { "" } else { "s" };
+    format!(
+        "More than {} events per {} {}{plural_s} occurred, unmuting the issue.",
+        py_str(&condition["volume"]),
+        py_str(nr_of_periods),
+        py_str(&condition["period"]),
     )
 }
 
@@ -204,6 +216,14 @@ mod tests {
             unmute_reason_mute_for(at),
             "An event was observed after the mute-deadline of 1 Nov 5:07 and the issue was unmuted."
         );
+    }
+
+    #[test]
+    fn unmute_reason_volume() {
+        let condition = serde_json::json!({"period": "hour", "nr_of_periods": 24, "volume": 5});
+        assert_eq!(unmute_reason_mute_until(&condition), "More than 5 events per 24 hours occurred, unmuting the issue.");
+        let condition = serde_json::json!({"period": "hour", "nr_of_periods": 1, "volume": 5});
+        assert_eq!(unmute_reason_mute_until(&condition), "More than 5 events per 1 hour occurred, unmuting the issue.");
     }
 
     #[test]

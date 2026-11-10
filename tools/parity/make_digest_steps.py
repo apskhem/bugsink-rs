@@ -1,5 +1,5 @@
 """Generates tools/parity/digest-steps.jsonl: a deterministic sequence of events to digest, interleaved with SQL
-"user actions" (resolve, mute, grouping-mechanism upgrade, retention changes) applied identically to upstream and to us.
+"user actions" (resolve, mute for/until, grouping-mechanism upgrade, retention changes) applied identically to upstream and to us.
 Also sets up alert recipients and messaging services."""
 import json
 import random
@@ -104,7 +104,17 @@ def by_fingerprint(key):
     return f"(SELECT issue_id FROM issues_grouping WHERE project_id = 1 AND grouping_key = '{key}')"
 
 
+def mute_until(value, period, nr_of_periods, volume):
+    # as upstream's mute-until action: unmute once the volume is reached; the first check happens on the next event
+    conditions = json.dumps([{"period": period, "nr_of_periods": nr_of_periods, "volume": volume}])
+    return (f"UPDATE issues_issue SET is_muted = true, unmute_on_volume_based_conditions = '{conditions}', "
+            f"next_unmute_check = 0 WHERE project_id = 1 AND calculated_value = '{value}'")
+
+
 actions = {
+    30: mute_until("disk 1 full", "hour", 24, 5),
+    50: mute_until("disk 2 full", "hour", 1, 2),
+    70: mute_until("disk 3 full", "day", 1, 3),
     40: "UPDATE issues_issue SET is_resolved = true, is_resolved_unconditionally = true "
         "WHERE project_id = 1 AND digest_order = 1",
     60: "UPDATE issues_issue SET is_resolved = true, is_resolved_by_next_release = true "
