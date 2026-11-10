@@ -6,4 +6,5 @@ pub mod digest;
 pub mod grouping;
 pub mod ingest;
 pub mod protocol;
+pub mod quota;
 pub mod tasks;

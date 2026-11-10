@@ -5,10 +5,9 @@
 //! Ported: grouping (incl. mechanism transition window and legacy attach), issue/project counters and digest orders,
 //! event rows incl. retention irrelevance, hourly counts, releases (incl. "resolved by next release"), regressions +
 //! reopen, time-based unmute, FIRST_SEEN/REGRESSED/UNMUTED/NEXT_MATERIALIZED turning points, tags, eviction (incl.
-//! zero retention).
+//! zero retention), installation/project quotas (`crate::quota`).
 //!
 //! TODO(parity), in order of importance for running in production:
-//! - installation/project quotas (`quota_exceeded_until`, `next_quota_check`)
 //! - volume-based unmute (`unmute_on_volume_based_conditions`, `next_unmute_check`)
 //! - alerts (new issue / regression / unmute)
 //! - browser/os tags derived from the User-Agent header (needs the same ua-parser data as upstream)
@@ -29,6 +28,7 @@ use uuid::Uuid;
 use crate::grouping::py::{isoformat, json_dumps, py_str, take_chars, truthy};
 use crate::grouping::{self, GroupingError, KeyWithMechanism};
 use crate::protocol::event::parse_timestamp;
+use crate::quota::{self, QuotaSettings, QuotaState};
 
 pub const JOB_KIND: &str = "digest";
 
@@ -66,10 +66,10 @@ impl From<GroupingError> for DigestError {
 }
 
 /// Job handler, for `crate::tasks::Registry::register`.
-pub async fn handle_job(pool: PgPool, payload: Value) -> anyhow::Result<()> {
+pub async fn handle_job(pool: PgPool, payload: Value, quotas: QuotaSettings) -> anyhow::Result<()> {
     let job: DigestJob = serde_json::from_value(payload)?;
     let event_id = job.event_id;
-    match digest(&pool, job, Utc::now()).await {
+    match digest(&pool, job, Utc::now(), &quotas).await {
         Ok(_) => Ok(()),
         Err(DigestError::Drop(reason)) => {
             tracing::warn!(%event_id, %reason, "event dropped in digest");
@@ -84,6 +84,7 @@ pub enum Outcome {
     Digested { issue_id: Uuid, issue_created: bool },
     ProjectGone,
     ZeroRetention,
+    OverQuota,
     Duplicate,
 }
 
@@ -94,6 +95,7 @@ pub(crate) struct Project {
     pub issue_count: i32,
     pub has_releases: bool,
     retention_max_event_count: i32,
+    quota: QuotaState,
     grouping_mechanism: String,
     previous_grouping_mechanism: Option<String>,
     grouping_mechanism_upgraded_at: Option<DateTime<Utc>>,
@@ -122,7 +124,12 @@ enum GroupingPath {
     New { key: KeyWithMechanism },
 }
 
-pub async fn digest(pool: &PgPool, job: DigestJob, digested_at: DateTime<Utc>) -> Result<Outcome, DigestError> {
+pub async fn digest(
+    pool: &PgPool,
+    job: DigestJob,
+    digested_at: DateTime<Utc>,
+    quotas: &QuotaSettings,
+) -> Result<Outcome, DigestError> {
     let mut tx = pool.begin().await?;
 
     // Serializes digestion per project (upstream: one global write lock): counters below are read-modify-write.
@@ -148,8 +155,22 @@ pub async fn digest(pool: &PgPool, job: DigestJob, digested_at: DateTime<Utc>) -
         return Ok(Outcome::Duplicate);
     }
 
-    // TODO(parity): quota checks; upstream's count_project_periods_and_act_on_it also does this increment.
-    project.digested_event_count += 1;
+    // Installation first, then the project (whose count this increments). Over quota, the event is dropped but the
+    // bookkeeping is kept.
+    if !quota::count_installation_periods_and_act_on_it(&mut tx, quotas, digested_at).await?
+        || !quota::count_project_periods_and_act_on_it(
+            &mut tx,
+            quotas,
+            project.id,
+            &mut project.digested_event_count,
+            &mut project.quota,
+            digested_at,
+        )
+        .await?
+    {
+        tx.commit().await?;
+        return Ok(Outcome::OverQuota);
+    }
 
     let data = &job.event;
     let denormalized = grouping::denormalized_fields(data)?;
@@ -191,12 +212,17 @@ pub async fn digest(pool: &PgPool, job: DigestJob, digested_at: DateTime<Utc>) -
         project.issue_count += 1;
     }
     sqlx::query(
-        "UPDATE projects_project SET digested_event_count = $2, stored_event_count = $3, issue_count = $4 WHERE id = $1",
+        "UPDATE projects_project SET digested_event_count = $2, stored_event_count = $3, issue_count = $4,
+             next_quota_check = $5, quota_exceeded_until = $6, quota_exceeded_reason = $7
+         WHERE id = $1",
     )
     .bind(project.id)
     .bind(project.digested_event_count)
     .bind(project.stored_event_count)
     .bind(project.issue_count)
+    .bind(project.quota.next_quota_check)
+    .bind(project.quota.exceeded_until)
+    .bind(&project.quota.exceeded_reason)
     .execute(&mut *tx)
     .await?;
 
@@ -250,6 +276,7 @@ pub async fn digest(pool: &PgPool, job: DigestJob, digested_at: DateTime<Utc>) -
 async fn lock_project(tx: &mut Transaction<'_, Postgres>, project_id: i64) -> sqlx::Result<Option<Project>> {
     let row = sqlx::query(
         "SELECT id, digested_event_count, stored_event_count, issue_count, has_releases, retention_max_event_count,
+                next_quota_check, quota_exceeded_until, quota_exceeded_reason,
                 grouping_mechanism, previous_grouping_mechanism, grouping_mechanism_upgraded_at
          FROM projects_project WHERE id = $1 AND NOT is_deleted FOR UPDATE",
     )
@@ -263,6 +290,11 @@ async fn lock_project(tx: &mut Transaction<'_, Postgres>, project_id: i64) -> sq
         issue_count: r.get("issue_count"),
         has_releases: r.get("has_releases"),
         retention_max_event_count: r.get("retention_max_event_count"),
+        quota: QuotaState {
+            next_quota_check: r.get("next_quota_check"),
+            exceeded_until: r.get("quota_exceeded_until"),
+            exceeded_reason: r.get("quota_exceeded_reason"),
+        },
         grouping_mechanism: r.get("grouping_mechanism"),
         previous_grouping_mechanism: r.get("previous_grouping_mechanism"),
         grouping_mechanism_upgraded_at: r.get("grouping_mechanism_upgraded_at"),

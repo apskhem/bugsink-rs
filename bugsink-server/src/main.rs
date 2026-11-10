@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use axum::Router;
 use bugsink_db::PgPool;
+use bugsink_server::quota::QuotaSettings;
 use bugsink_server::{api, digest, grouping, ingest, tasks};
 use clap::{Args, Parser, Subcommand};
 use tokio::sync::watch;
@@ -23,6 +24,10 @@ struct Cli {
     /// Run against a database migrated by a newer upstream Bugsink than this build supports (at your own risk).
     #[arg(long, env = "BUGSINK_ALLOW_NEWER_UPSTREAM_SCHEMA", default_value_t = false)]
     allow_newer_upstream_schema: bool,
+
+    /// Ingestion quotas; same environment variables and defaults as upstream.
+    #[command(flatten)]
+    quotas: QuotaSettings,
 
     #[command(subcommand)]
     command: Command,
@@ -86,27 +91,27 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Command::Migrate => Ok(()),
-        Command::Serve(args) => serve(pool, args).await,
+        Command::Serve(args) => serve(pool, args, cli.quotas).await,
         Command::Worker { workers } => {
             let (shutdown_tx, shutdown_rx) = watch::channel(false);
             tokio::spawn(async move {
                 shutdown_signal().await;
                 let _ = shutdown_tx.send(true);
             });
-            tasks::run_workers(pool, registry(), workers, shutdown_rx).await;
+            tasks::run_workers(pool, registry(cli.quotas), workers, shutdown_rx).await;
             Ok(())
         }
         Command::CreateProject { name, base_url } => create_project(&pool, &name, &base_url).await,
     }
 }
 
-fn registry() -> tasks::Registry {
+fn registry(quotas: QuotaSettings) -> tasks::Registry {
     tasks::Registry::default()
-        .register(digest::JOB_KIND, digest::handle_job)
+        .register(digest::JOB_KIND, move |pool, payload| digest::handle_job(pool, payload, quotas))
         .register(digest::retention::DELETE_BY_AGE_JOB_KIND, digest::retention::handle_delete_by_age_job)
 }
 
-async fn serve(pool: PgPool, args: ServeArgs) -> anyhow::Result<()> {
+async fn serve(pool: PgPool, args: ServeArgs, quotas: QuotaSettings) -> anyhow::Result<()> {
     let index = args.static_dir.join("index.html");
     if !index.exists() {
         tracing::warn!(path = %index.display(), "frontend not built; only the API will be useful");
@@ -114,14 +119,14 @@ async fn serve(pool: PgPool, args: ServeArgs) -> anyhow::Result<()> {
     let frontend = ServeDir::new(&args.static_dir).fallback(ServeFile::new(index));
 
     let app = Router::new()
-        .merge(ingest::router(pool.clone(), args.max_body_bytes))
+        .merge(ingest::router(pool.clone(), args.max_body_bytes, quotas))
         .merge(api::router(pool.clone()))
         .fallback_service(frontend)
         .layer(TraceLayer::new_for_http());
 
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let workers = (args.workers > 0)
-        .then(|| tokio::spawn(tasks::run_workers(pool, registry(), args.workers, shutdown_rx)));
+        .then(|| tokio::spawn(tasks::run_workers(pool, registry(quotas), args.workers, shutdown_rx)));
 
     let listener = tokio::net::TcpListener::bind(args.bind).await.with_context(|| format!("binding {}", args.bind))?;
     tracing::info!(addr = %args.bind, workers = args.workers, "listening");

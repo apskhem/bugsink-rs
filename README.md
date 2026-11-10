@@ -28,21 +28,20 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
   upstream's own functions. Grouping keys must match byte-for-byte, or new events would open duplicate issues.
 - `digest.sh`: a scripted sequence of ~200 events plus user actions (resolve, resolve-by-next-release, resolve-in-release,
   mute-until, grouping-mechanism upgrade, retention changes that force eviction incl. of `never_evict` events and zero
-  retention) digested four ways: upstream only, bugsink-rs only, bugsink-rs then
+  retention) digested four ways, once with default settings and once with tight quotas (`MAX_EVENTS_PER_*`): upstream only, bugsink-rs only, bugsink-rs then
   upstream on the same database, and upstream then bugsink-rs. The four databases are compared row by row.
 
 ### Not yet ported (upstream behaviour missing)
 
 In order of importance for production use (each has a `TODO(parity)` at the spot it belongs):
 
-1. Installation/project **quotas**, and 429s at ingest while a quota is exceeded.
-2. **Alerts** (new issue, regression, unmute) by email and messaging services.
-3. **Volume-based unmute** conditions.
-4. Browser/OS **tags derived from the User-Agent** header.
-5. Minidumps, sourcemaps/debug files, CSP reports, `VALIDATE_ON_DIGEST`, file-based event storage (eviction deletes
+1. **Alerts** (new issue, regression, unmute) by email and messaging services.
+2. **Volume-based unmute** conditions.
+3. Browser/OS **tags derived from the User-Agent** header.
+4. Minidumps, sourcemaps/debug files, CSP reports, `VALIDATE_ON_DIGEST`, file-based event storage (eviction deletes
    such events' rows but not their files).
-6. The `MAX_RETENTION_PER_PROJECT_EVENT_COUNT` setting (installation-wide cap on per-project retention).
-7. Everything the UI does (resolve, mute, delete, members, ...), and the UI API's authentication (see `bugsink-server/src/api.rs`).
+5. The `MAX_RETENTION_PER_PROJECT_EVENT_COUNT` setting (installation-wide cap on per-project retention).
+6. Everything the UI does (resolve, mute, delete, members, ...), and the UI API's authentication (see `bugsink-server/src/api.rs`).
 
 Known deliberate difference: an envelope whose event payload is not valid JSON gets a 400 at ingest. Upstream returns
 200 and drops the event during digest.
@@ -59,7 +58,8 @@ bugsink-server/        the `bugsink` binary (src/main.rs: CLI, config, HTTP, in-
   src/tasks.rs         job queue on Postgres (SKIP LOCKED + LISTEN/NOTIFY), worker loop; replaces upstream's snappea
   src/digest           upstream-exact digest: issues, groupings, events, releases, regressions, tags, counts,
                        eviction (retention.rs)
-  src/ingest.rs        POST /api/{project_id}/envelope/ and /store/ (auth, decode, enqueue)
+  src/ingest.rs        POST /api/{project_id}/envelope/ and /store/ (auth, quota 429s, decode, enqueue)
+  src/quota.rs         installation/project quotas over rolling windows (counted in digest, enforced in both)
   src/api.rs           /api/v1/... JSON API for the frontend
   examples/            parity drivers used by tools/parity/
 frontend/              CSR app (separate JS workspace), built into frontend/dist/; see frontend/README.md
@@ -80,6 +80,11 @@ cargo run -- serve                         # HTTP on 127.0.0.1:8000 + 4 workers
 ```
 
 `bugsink worker` runs workers without HTTP, for scaling digestion separately.
+
+Ingestion quotas use upstream's environment variables and defaults: `MAX_EVENTS_PER_PROJECT_PER_5_MINUTES` (1000),
+`MAX_EVENTS_PER_PROJECT_PER_HOUR` (5000), `MAX_EVENTS_PER_PROJECT_PER_MONTH` (1000000), and the installation-wide
+`MAX_EVENTS_PER_5_MINUTES`, `MAX_EVENTS_PER_HOUR`, `MAX_EVENTS_PER_MONTH` (same defaults). Give `serve` and `worker`
+the same values.
 
 Don't run upstream and bugsink-rs against the same database at the same time: each assumes it is the only digester.
 

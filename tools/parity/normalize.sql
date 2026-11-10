@@ -1,7 +1,10 @@
 -- Dumps the digest-relevant state of a Bugsink database in a form that is comparable across databases: random ids
 -- are replaced by natural keys, and the random retention irrelevance is left out.
 \pset footer off
-SELECT 'project', id, digested_event_count, stored_event_count, issue_count, has_releases FROM projects_project ORDER BY id;
+SELECT 'project', id, digested_event_count, stored_event_count, issue_count, has_releases, next_quota_check,
+       quota_exceeded_until, quota_exceeded_reason
+FROM projects_project ORDER BY id;
+SELECT 'installation', next_quota_check, quota_exceeded_until, quota_exceeded_reason FROM phonehome_installation;
 SELECT 'issue', project_id, digest_order, first_seen, last_seen, digested_event_count, stored_event_count,
        calculated_type, calculated_value, transaction, last_frame_filename, last_frame_module, last_frame_function,
        is_resolved, is_resolved_by_next_release, is_resolved_unconditionally, replace(fixed_at, E'\n', '|'),
