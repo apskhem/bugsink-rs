@@ -1,5 +1,5 @@
 """Generates tools/parity/digest-steps.jsonl: a deterministic sequence of events to digest, interleaved with SQL
-"user actions" (resolve, mute, grouping-mechanism upgrade) applied identically to upstream and to us."""
+"user actions" (resolve, mute, grouping-mechanism upgrade, retention changes) applied identically to upstream and to us."""
 import json
 import random
 import uuid
@@ -14,17 +14,28 @@ def at(i):
     return (T0 + timedelta(minutes=7 * i)).isoformat()
 
 
-def project_sql(pid, mechanism):
+def project_sql(pid, mechanism, retention):
     return (
         "INSERT INTO projects_project (id, name, slug, sentry_key, is_deleted, has_releases, issue_count, "
         "digested_event_count, stored_event_count, alert_on_new_issue, alert_on_regression, alert_on_unmute, visibility, "
         "quota_exceeded_reason, next_quota_check, retention_max_event_count, grouping_mechanism) VALUES "
-        f"({pid}, 'p{pid}', 'p{pid}', '{KEYS[pid]}', false, false, 0, 0, 0, false, false, false, 99, 'null', 0, 10000, "
+        f"({pid}, 'p{pid}', 'p{pid}', '{KEYS[pid]}', false, false, 0, 0, 0, false, false, false, 99, 'null', 0, {retention}, "
         f"'{mechanism}')"
     )
 
 
-steps = [{"sql": project_sql(1, "bugsink-v1")}, {"sql": project_sql(2, "bugsink-v2")}]
+# irrelevance_for_retention is random, which would make eviction pick different events on each side. This trigger
+# replaces it with a function of the event_id, so both sides evict the same events. Also on UPDATE: upstream re-saves
+# all fields of never_evict events.
+IRRELEVANCE_TRIGGER = [
+    "CREATE FUNCTION parity_irrelevance() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN "
+    "NEW.irrelevance_for_retention := mod(get_byte(decode(md5(NEW.event_id::text), 'hex'), 0), 7); RETURN NEW; END $$",
+    "CREATE TRIGGER parity_irrelevance BEFORE INSERT OR UPDATE ON events_event "
+    "FOR EACH ROW EXECUTE FUNCTION parity_irrelevance()",
+]
+
+steps = [{"sql": project_sql(1, "bugsink-v1", 10000)}, {"sql": project_sql(2, "bugsink-v2", 15)}]
+steps += [{"sql": sql} for sql in IRRELEVANCE_TRIGGER]
 
 types = ["ValueError", "KeyError", "TypeError", "ZeroDivisionError", "RuntimeError", "IntegrityError"]
 templates = ["user {} not found", "invalid literal for int(): '{}'", "timeout after {}ms", "row {} missing",
@@ -49,6 +60,11 @@ actions = {
     120: "UPDATE projects_project SET grouping_mechanism = 'bugsink-v2', previous_grouping_mechanism = 'bugsink-v1', "
          f"grouping_mechanism_upgraded_at = '{at(120)}' WHERE id = 1",
     150: "UPDATE issues_issue SET is_resolved = true WHERE project_id = 2 AND digest_order = 1",
+    # eviction: project 2 evicts 1 at a time from the start (max 15); project 1 drops to 50 at once (one big eviction,
+    # then 2 at a time); zero retention deletes all of project 2's events; then never_evict events have to go too.
+    140: "UPDATE projects_project SET retention_max_event_count = 50 WHERE id = 1",
+    170: "UPDATE projects_project SET retention_max_event_count = 0 WHERE id = 2",
+    190: "UPDATE projects_project SET retention_max_event_count = 3 WHERE id = 2",
 }
 
 event_ids = []

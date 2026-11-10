@@ -101,7 +101,9 @@ async fn main() -> anyhow::Result<()> {
 }
 
 fn registry() -> tasks::Registry {
-    tasks::Registry::default().register(digest::JOB_KIND, digest::handle_job)
+    tasks::Registry::default()
+        .register(digest::JOB_KIND, digest::handle_job)
+        .register(digest::retention::DELETE_BY_AGE_JOB_KIND, digest::retention::handle_delete_by_age_job)
 }
 
 async fn serve(pool: PgPool, args: ServeArgs) -> anyhow::Result<()> {

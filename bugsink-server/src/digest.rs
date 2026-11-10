@@ -4,11 +4,10 @@
 //!
 //! Ported: grouping (incl. mechanism transition window and legacy attach), issue/project counters and digest orders,
 //! event rows incl. retention irrelevance, hourly counts, releases (incl. "resolved by next release"), regressions +
-//! reopen, time-based unmute, FIRST_SEEN/REGRESSED/UNMUTED/NEXT_MATERIALIZED turning points, tags.
+//! reopen, time-based unmute, FIRST_SEEN/REGRESSED/UNMUTED/NEXT_MATERIALIZED turning points, tags, eviction (incl.
+//! zero retention).
 //!
 //! TODO(parity), in order of importance for running in production:
-//! - eviction when `stored_event_count` exceeds `retention_max_event_count` (`events/retention.py`); until then the
-//!   database grows without bound. Zero retention is handled (events are dropped).
 //! - installation/project quotas (`quota_exceeded_until`, `next_quota_check`)
 //! - volume-based unmute (`unmute_on_volume_based_conditions`, `next_unmute_check`)
 //! - alerts (new issue / regression / unmute)
@@ -17,6 +16,7 @@
 
 mod counts;
 mod releases;
+pub mod retention;
 mod tags;
 
 use bugsink_db::{PgPool, Postgres, Transaction, TurningPointKind};
@@ -130,7 +130,11 @@ pub async fn digest(pool: &PgPool, job: DigestJob, digested_at: DateTime<Utc>) -
         return Ok(Outcome::ProjectGone);
     };
     if project.retention_max_event_count == 0 {
-        // TODO(parity): upstream also schedules deletion of already-stored events here.
+        // `handle_zero_retention`: evict-before-add can't get below 1, so stored events are deleted by a job instead.
+        if project.stored_event_count > 0 {
+            retention::enqueue_delete_by_age(&mut tx, project.id).await?;
+            tx.commit().await?;
+        }
         return Ok(Outcome::ZeroRetention);
     }
     // Upstream relies on the (project, event_id) unique constraint and rolls back; checking first is equivalent.
@@ -170,9 +174,19 @@ pub async fn digest(pool: &PgPool, job: DigestJob, digested_at: DateTime<Utc>) -
         issue.calculated_value = calculated_value.clone();
     }
 
-    // TODO(parity): eviction (should_evict / evict_for_max_events) goes here.
-    issue.stored_event_count += 1;
-    project.stored_event_count += 1;
+    // Evict before adding: the +1 is the event about to be stored.
+    let project_stored_event_count = project.stored_event_count + 1;
+    let evicted = if retention::should_evict(&project, project_stored_event_count) {
+        let evicted = retention::evict_for_max_events(&mut tx, &project, digested_at, project_stored_event_count).await?;
+        // This issue's count is updated in memory and saved below.
+        let others = evicted.per_issue.iter().filter(|(id, _)| **id != issue.id).map(|(id, n)| (*id, *n));
+        retention::update_issue_counts(&mut tx, others).await?;
+        evicted
+    } else {
+        retention::EvictionCounts::default()
+    };
+    issue.stored_event_count += 1 - evicted.for_issue(issue.id);
+    project.stored_event_count = project_stored_event_count - evicted.total;
     if issue_created {
         project.issue_count += 1;
     }

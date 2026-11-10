@@ -73,6 +73,15 @@ pub async fn run_workers(pool: PgPool, registry: Registry, concurrency: usize, s
     }
 }
 
+/// Runs ready jobs in the calling task until none are left (failed ones are retried later, so this ends). For the
+/// parity harness, which needs jobs done before the next step.
+pub async fn run_until_idle(pool: &PgPool, registry: &Registry) -> sqlx::Result<()> {
+    while let Some(job) = claim(pool).await? {
+        run_one(pool, registry, job).await;
+    }
+    Ok(())
+}
+
 async fn worker(n: usize, pool: PgPool, registry: Arc<Registry>, mut shutdown: watch::Receiver<bool>) {
     let mut listener = match PgListener::connect_with(&pool).await {
         Ok(mut l) => match l.listen(CHANNEL).await {

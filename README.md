@@ -27,19 +27,21 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
 - `grouping.sh`: grouping keys, issue titles and denormalized fields for ~400 edge-case events, compared with
   upstream's own functions. Grouping keys must match byte-for-byte, or new events would open duplicate issues.
 - `digest.sh`: a scripted sequence of ~200 events plus user actions (resolve, resolve-by-next-release, resolve-in-release,
-  mute-until, grouping-mechanism upgrade) digested four ways: upstream only, bugsink-rs only, bugsink-rs then
+  mute-until, grouping-mechanism upgrade, retention changes that force eviction incl. of `never_evict` events and zero
+  retention) digested four ways: upstream only, bugsink-rs only, bugsink-rs then
   upstream on the same database, and upstream then bugsink-rs. The four databases are compared row by row.
 
 ### Not yet ported (upstream behaviour missing)
 
 In order of importance for production use (each has a `TODO(parity)` at the spot it belongs):
 
-1. **Eviction** (`retention_max_event_count`): without it the events table grows without bound.
-2. Installation/project **quotas**, and 429s at ingest while a quota is exceeded.
-3. **Alerts** (new issue, regression, unmute) by email and messaging services.
-4. **Volume-based unmute** conditions.
-5. Browser/OS **tags derived from the User-Agent** header.
-6. Minidumps, sourcemaps/debug files, CSP reports, `VALIDATE_ON_DIGEST`, file-based event storage.
+1. Installation/project **quotas**, and 429s at ingest while a quota is exceeded.
+2. **Alerts** (new issue, regression, unmute) by email and messaging services.
+3. **Volume-based unmute** conditions.
+4. Browser/OS **tags derived from the User-Agent** header.
+5. Minidumps, sourcemaps/debug files, CSP reports, `VALIDATE_ON_DIGEST`, file-based event storage (eviction deletes
+   such events' rows but not their files).
+6. The `MAX_RETENTION_PER_PROJECT_EVENT_COUNT` setting (installation-wide cap on per-project retention).
 7. Everything the UI does (resolve, mute, delete, members, ...), and the UI API's authentication (see `bugsink-server/src/api.rs`).
 
 Known deliberate difference: an envelope whose event payload is not valid JSON gets a 400 at ingest. Upstream returns
@@ -55,7 +57,8 @@ bugsink-server/        the `bugsink` binary (src/main.rs: CLI, config, HTTP, in-
   src/protocol         Sentry wire formats: auth, content-encoding, envelopes, timestamps (pure)
   src/grouping         upstream-exact grouping keys, titles, denormalized fields; Python string semantics (pure)
   src/tasks.rs         job queue on Postgres (SKIP LOCKED + LISTEN/NOTIFY), worker loop; replaces upstream's snappea
-  src/digest           upstream-exact digest: issues, groupings, events, releases, regressions, tags, counts
+  src/digest           upstream-exact digest: issues, groupings, events, releases, regressions, tags, counts,
+                       eviction (retention.rs)
   src/ingest.rs        POST /api/{project_id}/envelope/ and /store/ (auth, decode, enqueue)
   src/api.rs           /api/v1/... JSON API for the frontend
   examples/            parity drivers used by tools/parity/

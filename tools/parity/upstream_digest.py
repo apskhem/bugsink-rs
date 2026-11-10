@@ -7,6 +7,10 @@ from datetime import datetime
 from django.db import connection
 
 from ingest.tasks import digest_event
+from snappea.settings import get_settings as get_snappea_settings
+
+# Run on-commit tasks (zero-retention deletion) inline, as replay.rs does after each step.
+get_snappea_settings()["TASK_ALWAYS_EAGER"] = True
 
 for line in sys.stdin:
     step = json.loads(line)
