@@ -47,7 +47,7 @@ each page needs; ✅ means it exists already.
 | Home (`/`) | `bugsink/views.py::home` | ✅ `GET /home` (`{"go": "issues", "project_id"}`, `"projects"` or `"teams"`) |
 | System warnings (banners on every page) | `base.html` | ✅ `GET /system-warnings`, `POST /system-warnings/email/silence` |
 | Users admin | `users/user_{list,edit}.html` | ✅ `GET /users`, `PATCH/DELETE /users/{id}` (only inactive users can be deleted), `POST /users/{id}/activate\|deactivate` |
-| Auth tokens | `bsmain/auth_token_{list,create}.html` | ✅ `GET /auth-tokens`, `GET /auth-tokens/new` (capabilities, projects), `POST /auth-tokens`, `DELETE /auth-tokens/{id}` (revoke) |
+| Auth tokens (for the REST API, `/api/canonical/0/`; its docs are at `/api/canonical/0/schema/swagger-ui/`) | `bsmain/auth_token_{list,create}.html` | ✅ `GET /auth-tokens`, `GET /auth-tokens/new` (capabilities, projects), `POST /auth-tokens`, `DELETE /auth-tokens/{id}` (revoke) |
 | Settings, counts | `templates/bugsink/{settings,counts}.html` | ✅ `GET /settings`, `GET /counts` (superusers) |
 | Error pages | `templates/{400,403,404,500,503}.html` | n/a (client-side) |
 

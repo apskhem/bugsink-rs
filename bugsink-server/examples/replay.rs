@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
                 issues::apply_to_issues(&pool, &[project_id], &issue_ids, &action, user_id, now).await?;
             } else {
                 for issue_id in issue_ids {
-                    issues::apply_to_issue(&pool, issue_id, &action, user_id, now).await?;
+                    issues::apply_to_issue(&pool, issue_id, &action, Some(user_id), now).await?;
                 }
             }
             tasks::run_until_idle(&pool, &registry).await?;

@@ -74,23 +74,25 @@ pub(crate) async fn latest_release_version(pool: &bugsink_db::PgPool, project_id
     Ok(ordered_releases(pool, project_id).await?.pop().map(|r| r.version))
 }
 
-/// `create_release_if_needed`; returns the (sanitized) version.
+/// `create_release_if_needed`: the (sanitized) version, and whether the release is new. `has_releases` is the
+/// project's flag; `issue` the one being digested, if any.
 pub(crate) async fn create_release_if_needed(
     tx: &mut Transaction<'_, Postgres>,
-    project: &mut Project,
+    project_id: i64,
+    has_releases: &mut bool,
     version: &str,
     timestamp: DateTime<Utc>,
-    issue: &mut Issue,
-) -> sqlx::Result<String> {
+    issue: Option<&mut Issue>,
+) -> sqlx::Result<(String, bool)> {
     let version = sanitize_version(version);
     let exists: bool =
         sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM releases_release WHERE project_id = $1 AND version = $2)")
-            .bind(project.id)
+            .bind(project_id)
             .bind(&version)
             .fetch_one(&mut **tx)
             .await?;
     if exists {
-        return Ok(version);
+        return Ok((version, false));
     }
 
     let semver_part = version_part(&version);
@@ -98,7 +100,7 @@ pub(crate) async fn create_release_if_needed(
     let last_epoch: Option<(i32, bool)> = sqlx::query_as(
         "SELECT sort_epoch, is_semver FROM releases_release WHERE project_id = $1 ORDER BY sort_epoch DESC LIMIT 1",
     )
-    .bind(project.id)
+    .bind(project_id)
     .fetch_optional(&mut **tx)
     .await?;
     let sort_epoch = match last_epoch {
@@ -112,7 +114,7 @@ pub(crate) async fn create_release_if_needed(
          VALUES ($1, $2, $3, $4, $5, $6, $7)",
     )
     .bind(release_id)
-    .bind(project.id)
+    .bind(project_id)
     .bind(&version)
     .bind(timestamp)
     .bind(if is_semver { semver_part } else { "" })
@@ -122,45 +124,47 @@ pub(crate) async fn create_release_if_needed(
     .await?;
 
     if version.is_empty() {
-        return Ok(version); // the empty release exists only to remember its date
+        return Ok((version, true)); // the empty release exists only to remember its date
     }
-    if !project.has_releases {
-        project.has_releases = true;
+    if !*has_releases {
+        *has_releases = true;
         sqlx::query("UPDATE projects_project SET has_releases = true WHERE id = $1")
-            .bind(project.id)
+            .bind(project_id)
             .execute(&mut **tx)
             .await?;
     }
 
-    let latest = ordered_releases(&mut **tx, project.id).await?.pop().map(|r| r.id);
+    let latest = ordered_releases(&mut **tx, project_id).await?.pop().map(|r| r.id);
     if latest == Some(release_id) {
         // Issues "resolved by next release" are now resolved in this one.
         let metadata = json_dumps(&json!({"actual_release": version}));
         let waiting: Vec<Uuid> = sqlx::query_scalar(
             "SELECT id FROM issues_issue WHERE project_id = $1 AND is_resolved_by_next_release",
         )
-        .bind(project.id)
+        .bind(project_id)
         .fetch_all(&mut **tx)
         .await?;
         for waiting_issue in &waiting {
-            insert_turning_point(tx, project.id, *waiting_issue, None, timestamp, TurningPointKind::NextMaterialized, &metadata)
+            insert_turning_point(tx, project_id, *waiting_issue, None, timestamp, TurningPointKind::NextMaterialized, &metadata)
                 .await?;
         }
         sqlx::query(
             "UPDATE issues_issue SET fixed_at = fixed_at || $2, is_resolved_by_next_release = false
              WHERE project_id = $1 AND is_resolved_by_next_release",
         )
-        .bind(project.id)
+        .bind(project_id)
         .bind(format!("{version}\n"))
         .execute(&mut **tx)
         .await?;
-        if issue.is_resolved_by_next_release {
+        if let Some(issue) = issue
+            && issue.is_resolved_by_next_release
+        {
             issue.fixed_at.push_str(&version);
             issue.fixed_at.push('\n');
             issue.is_resolved_by_next_release = false;
         }
     }
-    Ok(version)
+    Ok((version, true))
 }
 
 /// `"a\nb\n"` -> `["a", "b"]` (newline-terminated lists, upstream's `parse_lines`).

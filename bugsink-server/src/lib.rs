@@ -15,6 +15,7 @@ pub mod memberships;
 pub mod projects;
 pub mod protocol;
 pub mod proxy;
+pub mod rest;
 pub mod quota;
 pub mod search;
 pub mod tasks;

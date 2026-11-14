@@ -242,7 +242,15 @@ pub async fn digest(
 
     counts::record_event_counts(&mut tx, project.id, issue.id, digested_at, event.digest_order).await?;
 
-    let release_version = releases::create_release_if_needed(&mut tx, &mut project, &event.release, job.ingested_at, &mut issue).await?;
+    let (release_version, _) = releases::create_release_if_needed(
+        &mut tx,
+        project.id,
+        &mut project.has_releases,
+        &event.release,
+        job.ingested_at,
+        Some(&mut issue),
+    )
+    .await?;
 
     let mut never_evict = false;
     if issue_created {

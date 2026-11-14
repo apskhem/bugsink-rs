@@ -180,7 +180,7 @@ pub async fn apply_to_issue(
     pool: &PgPool,
     issue_id: Uuid,
     action: &Action,
-    user_id: i64,
+    user_id: Option<i64>,
     now: DateTime<Utc>,
 ) -> anyhow::Result<bool> {
     let now = now.trunc_subsecs(6); // what Postgres (and so upstream's metadata) keeps

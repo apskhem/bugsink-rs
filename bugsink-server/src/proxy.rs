@@ -23,6 +23,9 @@ pub struct ProxySettings {
     /// The number of proxies that append to X-Forwarded-For (needed with USE_X_FORWARDED_FOR).
     #[arg(long, env = "X_FORWARDED_FOR_PROXY_COUNT", default_value_t = 0)]
     pub x_forwarded_for_proxy_count: i64,
+    /// Behind a proxy: links the REST API returns use X-Forwarded-Host.
+    #[arg(long, env = "USE_X_FORWARDED_HOST", default_value = "false", value_parser = py_bool)]
+    pub use_x_forwarded_host: bool,
 }
 
 /// Where the client's address comes from.
@@ -105,6 +108,7 @@ mod tests {
             use_x_real_ip: real_ip,
             use_x_forwarded_for: xff,
             x_forwarded_for_proxy_count: count,
+            use_x_forwarded_host: false,
         }
     }
 

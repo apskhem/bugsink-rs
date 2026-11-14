@@ -62,6 +62,18 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
   without (invite links instead, and signing up without confirming the address). After every step the outcome (incl. each form's error messages), invite links and
   a snapshot of users, teams, projects, memberships, tokens and messaging services must agree; at the end, the
   emails (invitations, confirmations, password resets) and test messages sent.
+- `rest_api.sh`: upstream's REST API (`/api/canonical/0/`) over HTTP. The digest steps, a display corpus, the
+  grouping corpus and issues and events enough to paginate are replayed into a database, with users, teams, projects
+  and auth tokens of every kind (service, personal, project-bound, expired, of inactive users or deleted projects,
+  inconsistent ones); two copies of it get the same ~1,000 requests, one through the official image's server and
+  one through ours: authentication and capabilities, what personal and project-bound tokens may reach, lists with
+  every filter, search, sort and order, cursors followed back and forth (ties included), malformed identifiers,
+  cursors, bodies and content types, every event's payload and stack trace as Markdown, triaging, comments, history,
+  releases (incl. resolving by the next one), creating and updating projects and teams, `OPTIONS` and the schema.
+  Every response must agree byte for byte (status, `Allow`, `WWW-Authenticate`, content type, body incl. links and
+  cursors; ids and timestamps made during the run normalized), and so must the database afterwards. Where upstream
+  answers with an HTML error page only the status is compared; events on which upstream's stack trace rendering
+  fails (a 500; we render what we can) are counted, not compared.
 - `user_agents.sh`: the browser/OS/device contexts (and so tags) derived from a request's User-Agent header, for the
   ~30,000 user agents in uap-core's test suite plus malformed inputs, compared with upstream's own function. The
   parser data (`bugsink-server/src/digest/ua_regexes.json`) is exported from the upstream image.
@@ -76,7 +88,8 @@ history and comments, groupings, event navigation, sparkline counts, events show
 project and membership management (invitations by email or link, new users setting their password, messaging
 services with test messages, project deletion), accounts (signup with email confirmation, password reset,
 preferences, changing the password), the installation's admin (users, auth tokens, counts, settings, system
-warnings), and the database bootstrap/version check. bugsink-rs can take over ingestion and digestion of an upstream
+warnings), upstream's REST API with auth tokens (`/api/canonical/0/`, its schema and Swagger UI), and the database
+bootstrap/version check. bugsink-rs can take over ingestion and digestion of an upstream
 installation today; viewing and managing issues still needs upstream's UI (not at the same time, see below).
 
 ### Not yet ported (upstream behaviour missing)
@@ -93,13 +106,12 @@ In order of importance for production use (code-level gaps also have a `TODO(par
 2. **Frontend**: not started (`frontend/` holds only the plan; framework not chosen).
 3. **Background jobs** besides digest, alerts, test messages, invitation, confirmation and password reset emails,
    and the deletion of issues and projects: phone-home.
-4. **Upstream's REST API** (`/api/canonical/0/`, with auth tokens) for scripts and integrations.
-5. **Ingest extras**: minidumps, sourcemap and debug-file uploads (`chunk-upload`, `artifactbundle/assemble`,
+4. **Ingest extras**: minidumps, sourcemap and debug-file uploads (`chunk-upload`, `artifactbundle/assemble`,
    `difs/assemble`) and applying them to stack traces, CSP reports (`/security/`), `VALIDATE_ON_DIGEST`, file-based
    event storage (eviction deletes such events' rows but not their files).
-6. **Settings**: `TIME_ZONE` (dates in alerts are UTC). Translations: upstream shows each user its pages and form
+5. **Settings**: `TIME_ZONE` (dates in alerts are UTC). Translations: upstream shows each user its pages and form
    messages in their language (English or Simplified Chinese); the API's messages are English.
-7. **Operations**: upstream's other management commands
+6. **Operations**: upstream's other management commands
    (`vacuum`'s files, old-events, ingest-dir and orphaned-issues parts, `delete_old_events`, `cleanup_*`,
    `make_consistent`, `create_auth_token`, ...); we have `migrate`, `create-project`, `create-superuser`,
    `send-welcome-email`, `vacuum` (deleted issues, eventless issue tags, tags), `serve` and `worker`. `/health/ready`
@@ -115,6 +127,9 @@ team whose projects have any data (409; upstream's database refuses it too), a p
 invitation, re-sending an invitation without email set up or asking for its link with email set up (409),
 re-sending the confirmation for an address nobody signed up with (404). "Home" doesn't send you to a deleted project.
 The counts page counts our job queue where upstream counts snappea's, and its backlog warning is about our queue.
+In the REST API, an event whose stack trace upstream can't render as Markdown gets one anyway (upstream: a 500);
+errors are JSON where upstream renders an HTML page (500s, unknown paths, errors on `/stacktrace/`); integers
+beyond 64 bits in request bodies and "mute until" thresholds beyond 2^32 aren't supported.
 
 ## Layout
 
@@ -140,6 +155,8 @@ bugsink-server/        the `bugsink` binary (src/main.rs: CLI, config, HTTP, in-
   src/memberships.rs   members, invitations (email or link), new users' tokens; who may do what
   src/alerts/setup.rs  messaging services: config forms (Django's URLField/URLValidator), test messages
   src/installation.rs  users admin, auth tokens, counts, system warnings, home
+  src/rest.rs          /api/canonical/0/...: upstream's REST API (bearer auth tokens, DRF's errors, fields and cursor
+                       pagination in rest/; the OpenAPI schema and Swagger UI page are upstream's, in rest/schema/)
   src/event_display.rs an event as upstream's event pages show it (stack traces, details, breadcrumbs)
   src/proxy.rs         the client's address behind a reverse proxy (X-Real-IP / X-Forwarded-For)
   src/vacuum.rs        `bugsink vacuum`: cleanup of eventless issue tags, unused tags, deleted issues
@@ -180,7 +197,8 @@ Don't run upstream and bugsink-rs against the same database at the same time: ea
 
 Behind a reverse proxy, set upstream's `BEHIND_HTTPS_PROXY` (or `BEHIND_PLAIN_HTTP_PROXY`): the client's address is
 then taken from `X-Real-IP`, or with `USE_X_REAL_IP=false USE_X_FORWARDED_FOR=true X_FORWARDED_FOR_PROXY_COUNT=<n>`
-from `X-Forwarded-For` (exactly n addresses expected). Without it every event gets the proxy's address.
+from `X-Forwarded-For` (exactly n addresses expected). Without it every event gets the proxy's address. The links
+the REST API returns (pagination) use `X-Forwarded-Proto` there, and `X-Forwarded-Host` with `USE_X_FORWARDED_HOST`.
 
 Users, teams and projects use upstream's settings: `SINGLE_USER`, `SINGLE_TEAM`, `TEAM_CREATION` and
 `USER_REGISTRATION` (`CB_ANYBODY`, `CB_MEMBERS`, `CB_ADMINS`, `CB_NOBODY`; signing up needs `CB_ANYBODY`),

@@ -257,7 +257,7 @@ fn py_reversed(v: &Value) -> Option<Value> {
 }
 
 /// `get_stacktrace_entries`.
-fn stacktrace_entries(data: &Value) -> Vec<Value> {
+pub(crate) fn stacktrace_entries(data: &Value) -> Vec<Value> {
     if let Ok(Some(exceptions)) = values(data.get("exception"))
         && !exceptions.is_empty()
     {
@@ -286,7 +286,7 @@ fn stacktrace_entries(data: &Value) -> Vec<Value> {
 }
 
 /// `get_thread_stacktrace_entries`: the first thread with frames goes first; none with frames, none at all.
-fn thread_stacktrace_entries(data: &Value) -> Vec<Value> {
+pub(crate) fn thread_stacktrace_entries(data: &Value) -> Vec<Value> {
     let Ok(Some(threads)) = values(data.get("threads")) else { return vec![] };
     let mut entries = Vec::with_capacity(threads.len());
     let mut first_with_frames = None;
@@ -371,7 +371,7 @@ fn py_index(len: usize, i: i64) -> Option<usize> {
     (0..len as i64).contains(&i).then_some(i as usize)
 }
 
-type Partial = Result<(), ()>;
+pub(crate) type Partial = Result<(), ()>;
 
 /// `annotate_with_meta(exceptions, get_values(_meta.exception))`, in place. Err where upstream raises (and stops).
 fn annotate_with_meta(entries: &mut [Value], data: &Value) -> Partial {
@@ -507,7 +507,7 @@ fn annotate_var(var: &mut Value, meta_var: &Value, pointer: &str) -> Result<(Tri
 
 /// `apply_sourcemaps` without uploaded sourcemaps: frames of files that an image says have a sourcemap get its debug
 /// id, as a hint to upload it.
-fn mark_debug_ids(entries: &mut [Value], data: &Value) -> Partial {
+pub(crate) fn mark_debug_ids(entries: &mut [Value], data: &Value) -> Partial {
     let images = match data.get("debug_meta") {
         None => return Ok(()),
         Some(Value::Object(m)) => m.get("images").cloned().unwrap_or(json!([])),

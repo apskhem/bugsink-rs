@@ -1,7 +1,7 @@
 //! `/api/v1/...`: the JSON API the frontend is built on.
 //!
 //! This replaces upstream's server-rendered Django views, so its shape follows the pages in `frontend/README.md`
-//! rather than upstream's DRF "canonical" API (which can be added later under `/api/canonical/0/`).
+//! rather than upstream's DRF "canonical" API (that one is `crate::rest`, under `/api/canonical/0/`).
 //!
 //! Every endpoint except health and login needs a session (`accounts::CurrentUser`) and checks access like upstream's
 //! views: superusers see everything; issues and events need an accepted membership of their project.
@@ -95,6 +95,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(project_admin::routes())
         .merge(members::routes())
         .merge(installation::routes())
+        .merge(crate::rest::routes())
         .with_state(state)
 }
 
@@ -362,7 +363,7 @@ async fn issue_action(
 ) -> ApiResult<ActionResult> {
     accessible_issue(&state.pool, &user, issue_id).await?;
     let action = parse_action(&req.action)?;
-    let applied = issues::apply_to_issue(&state.pool, issue_id, &action, user.id, Utc::now())
+    let applied = issues::apply_to_issue(&state.pool, issue_id, &action, Some(user.id), Utc::now())
         .await
         .map_err(ApiError::internal)?;
     let issue = sqlx::query_as(sqlx::AssertSqlSafe(format!(

@@ -1,0 +1,383 @@
+{
+ "teams": {
+  "POST": {
+   "id": {
+    "type": "string",
+    "required": false,
+    "read_only": true,
+    "label": "Id"
+   },
+   "name": {
+    "type": "string",
+    "required": true,
+    "read_only": false,
+    "label": "Name",
+    "max_length": 255
+   },
+   "visibility": {
+    "type": "choice",
+    "required": true,
+    "read_only": false,
+    "label": "Visibility",
+    "choices": [
+     {
+      "value": "joinable",
+      "display_name": "joinable"
+     },
+     {
+      "value": "discoverable",
+      "display_name": "discoverable"
+     },
+     {
+      "value": "hidden",
+      "display_name": "hidden"
+     }
+    ]
+   }
+  }
+ },
+ "projects": {
+  "POST": {
+   "id": {
+    "type": "integer",
+    "required": false,
+    "read_only": true,
+    "label": "ID"
+   },
+   "team": {
+    "type": "field",
+    "required": false,
+    "read_only": false,
+    "label": "Team"
+   },
+   "name": {
+    "type": "string",
+    "required": true,
+    "read_only": false,
+    "label": "Name",
+    "max_length": 255
+   },
+   "slug": {
+    "type": "slug",
+    "required": true,
+    "read_only": false,
+    "label": "Slug",
+    "max_length": 50
+   },
+   "dsn": {
+    "type": "string",
+    "required": false,
+    "read_only": true,
+    "label": "Dsn"
+   },
+   "digested_event_count": {
+    "type": "integer",
+    "required": false,
+    "read_only": true,
+    "label": "Digested event count"
+   },
+   "stored_event_count": {
+    "type": "integer",
+    "required": false,
+    "read_only": true,
+    "label": "Stored event count"
+   },
+   "alert_on_new_issue": {
+    "type": "boolean",
+    "required": false,
+    "read_only": false,
+    "label": "Alert on new issue"
+   },
+   "alert_on_regression": {
+    "type": "boolean",
+    "required": false,
+    "read_only": false,
+    "label": "Alert on regression"
+   },
+   "alert_on_unmute": {
+    "type": "boolean",
+    "required": false,
+    "read_only": false,
+    "label": "Alert on unmute"
+   },
+   "visibility": {
+    "type": "choice",
+    "required": true,
+    "read_only": false,
+    "label": "Visibility",
+    "choices": [
+     {
+      "value": "joinable",
+      "display_name": "joinable"
+     },
+     {
+      "value": "discoverable",
+      "display_name": "discoverable"
+     },
+     {
+      "value": "team_members",
+      "display_name": "team_members"
+     }
+    ]
+   },
+   "retention_max_event_count": {
+    "type": "integer",
+    "required": false,
+    "read_only": false,
+    "label": "Retention max event count",
+    "min_value": 0,
+    "max_value": 2147483647
+   },
+   "grouping_mechanism": {
+    "type": "choice",
+    "required": false,
+    "read_only": false,
+    "label": "Grouping mechanism",
+    "choices": [
+     {
+      "value": "bugsink-v1",
+      "display_name": "Original, default until v2.4.0 (July 2026)"
+     },
+     {
+      "value": "bugsink-v2",
+      "display_name": "Value-normalized (latest)"
+     }
+    ]
+   }
+  }
+ },
+ "issue-comments": {
+  "POST": {
+   "id": {
+    "type": "integer",
+    "required": false,
+    "read_only": true,
+    "label": "Id"
+   },
+   "issue": {
+    "type": "string",
+    "required": true,
+    "read_only": false,
+    "label": "Issue"
+   },
+   "project": {
+    "type": "integer",
+    "required": false,
+    "read_only": true,
+    "label": "Project"
+   },
+   "timestamp": {
+    "type": "datetime",
+    "required": false,
+    "read_only": true,
+    "label": "Timestamp"
+   },
+   "comment": {
+    "type": "string",
+    "required": true,
+    "read_only": false,
+    "label": "Comment"
+   },
+   "user": {
+    "type": "integer",
+    "required": false,
+    "read_only": true,
+    "label": "User"
+   }
+  }
+ },
+ "releases": {
+  "POST": {
+   "id": {
+    "type": "string",
+    "required": false,
+    "read_only": true,
+    "label": "Id"
+   },
+   "project": {
+    "type": "field",
+    "required": true,
+    "read_only": false,
+    "label": "Project"
+   },
+   "version": {
+    "type": "string",
+    "required": true,
+    "read_only": false,
+    "label": "Version",
+    "max_length": 250
+   },
+   "date_released": {
+    "type": "datetime",
+    "required": false,
+    "read_only": false,
+    "label": "Date released"
+   }
+  }
+ },
+ "issue-action": {
+  "POST": {
+   "id": {
+    "type": "string",
+    "required": false,
+    "read_only": true,
+    "label": "Id"
+   },
+   "friendly_id": {
+    "type": "string",
+    "required": false,
+    "read_only": true,
+    "label": "Friendly id"
+   },
+   "project": {
+    "type": "field",
+    "required": true,
+    "read_only": false,
+    "label": "Project"
+   },
+   "digest_order": {
+    "type": "integer",
+    "required": true,
+    "read_only": false,
+    "label": "Digest order",
+    "min_value": 0,
+    "max_value": 2147483647
+   },
+   "last_seen": {
+    "type": "datetime",
+    "required": true,
+    "read_only": false,
+    "label": "Last seen"
+   },
+   "first_seen": {
+    "type": "datetime",
+    "required": true,
+    "read_only": false,
+    "label": "First seen"
+   },
+   "digested_event_count": {
+    "type": "integer",
+    "required": true,
+    "read_only": false,
+    "label": "Digested event count",
+    "min_value": -2147483648,
+    "max_value": 2147483647
+   },
+   "stored_event_count": {
+    "type": "integer",
+    "required": false,
+    "read_only": true,
+    "label": "Stored event count"
+   },
+   "calculated_type": {
+    "type": "string",
+    "required": false,
+    "read_only": false,
+    "label": "Calculated type",
+    "max_length": 128
+   },
+   "calculated_value": {
+    "type": "string",
+    "required": false,
+    "read_only": false,
+    "label": "Calculated value",
+    "max_length": 1024
+   },
+   "transaction": {
+    "type": "string",
+    "required": false,
+    "read_only": false,
+    "label": "Transaction",
+    "max_length": 200
+   },
+   "is_resolved": {
+    "type": "boolean",
+    "required": false,
+    "read_only": false,
+    "label": "Is resolved"
+   },
+   "is_resolved_unconditionally": {
+    "type": "boolean",
+    "required": false,
+    "read_only": false,
+    "label": "Is resolved unconditionally"
+   },
+   "is_resolved_by_next_release": {
+    "type": "boolean",
+    "required": false,
+    "read_only": false,
+    "label": "Is resolved by next release"
+   },
+   "fixed_at": {
+    "type": "list",
+    "required": false,
+    "read_only": true,
+    "label": "Fixed at",
+    "help_text": "Release versions at which this issue was marked fixed.",
+    "child": {
+     "type": "string",
+     "required": true,
+     "read_only": false
+    }
+   },
+   "events_at": {
+    "type": "list",
+    "required": false,
+    "read_only": true,
+    "label": "Events at",
+    "help_text": "Release versions in which events were seen. An empty string means no release was supplied.",
+    "child": {
+     "type": "string",
+     "required": true,
+     "read_only": false
+    }
+   },
+   "is_muted": {
+    "type": "boolean",
+    "required": false,
+    "read_only": false,
+    "label": "Is muted"
+   },
+   "unmute_after": {
+    "type": "datetime",
+    "required": false,
+    "read_only": false,
+    "label": "Unmute after"
+   },
+   "unmute_on_volume_based_conditions": {
+    "type": "field",
+    "required": false,
+    "read_only": true,
+    "label": "Unmute on volume based conditions",
+    "help_text": "Unmute when any condition is met: at least volume events within nr_of_periods of period.",
+    "child": {
+     "type": "nested object",
+     "required": false,
+     "read_only": true,
+     "help_text": "Unmute when any condition is met: at least volume events within nr_of_periods of period.",
+     "children": {
+      "period": {
+       "type": "string",
+       "required": true,
+       "read_only": false,
+       "label": "Period",
+       "help_text": "Period unit, e.g. hour or day."
+      },
+      "nr_of_periods": {
+       "type": "integer",
+       "required": true,
+       "read_only": false,
+       "label": "Nr of periods"
+      },
+      "volume": {
+       "type": "integer",
+       "required": true,
+       "read_only": false,
+       "label": "Volume"
+      }
+     }
+    }
+   }
+  }
+ }
+}
