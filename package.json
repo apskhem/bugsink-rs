@@ -1,0 +1,23 @@
+{
+  "name": "bugsink-rs",
+  "private": true,
+  "description": "A private Rust rewrite of the [Bugsink](https://github.com/bugsink/bugsink) backend: Sentry-SDK-compatible error tracking on Postgres, serving a separately built client-side-rendered frontend.",
+  "workspaces": [
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "npm run dev -w frontend",
+    "build": "npm run build -w frontend",
+    "check": "npm run check -w frontend",
+    "lint": "npm run lint -w frontend",
+    "fmt": "npm run fmt -w frontend"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/apskhem/bugsink-rs.git"
+  },
+  "bugs": {
+    "url": "https://github.com/apskhem/bugsink-rs/issues"
+  },
+  "homepage": "https://github.com/apskhem/bugsink-rs#readme"
+}

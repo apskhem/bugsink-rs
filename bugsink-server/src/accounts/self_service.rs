@@ -38,13 +38,16 @@ pub struct AccountSettings {
     /// Whether anybody can sign up (`USER_REGISTRATION=CB_ANYBODY`).
     signup: bool,
     site_title: String,
+    /// `SINGLE_TEAM`: the navigation has no "Teams".
+    single_team: bool,
 }
 
-/// What the login page needs to know.
+/// What the login page and the navigation need to know.
 pub async fn settings(State(state): State<ApiState>) -> Json<AccountSettings> {
     Json(AccountSettings {
         signup: state.settings.users.signup_allowed(),
         site_title: state.settings.alerts.site_title.clone(),
+        single_team: state.settings.users.single_team,
     })
 }
 

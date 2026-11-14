@@ -89,15 +89,16 @@ project and membership management (invitations by email or link, new users setti
 services with test messages, project deletion), accounts (signup with email confirmation, password reset,
 preferences, changing the password), the installation's admin (users, auth tokens, counts, settings, system
 warnings), upstream's REST API with auth tokens (`/api/canonical/0/`, its schema and Swagger UI), and the database
-bootstrap/version check. bugsink-rs can take over ingestion and digestion of an upstream
-installation today; viewing and managing issues still needs upstream's UI (not at the same time, see below).
+bootstrap/version check. bugsink-rs can take over an upstream installation: ingestion, digestion, and upstream's UI
+as a client-side React app (`frontend/`) on the UI API.
 
 ### Not yet ported (upstream behaviour missing)
 
 In order of importance for production use (code-level gaps also have a `TODO(parity)` where they belong):
 
-1. **Frontend**: not started (`frontend/` holds only the plan; framework not chosen). Until then, viewing and managing
-   issues needs upstream's UI (not at the same time, see below).
+1. **Frontend**: every page is ported (see `frontend/README.md`), checked against the API's responses but not yet
+   compared with upstream's pages side by side. Left out: the event download/raw/Markdown links (no backend routes),
+   project warnings and sourcemap ids on the issue pages, and translations (the language preference is stored only).
 2. **The UI's API** is complete but for the issue's Markdown export and the system warnings from upstream's
    phone-home ("remote messages").
 3. **Background jobs** besides digest, alerts, test messages, invitation, confirmation and password reset emails,
@@ -202,7 +203,8 @@ cp .env.example .env && set -a && . ./.env && set +a
 cargo run -- migrate                       # bootstrap (empty DB) or verify (existing Bugsink 2.6.3 DB)
 cargo run -- create-project "My App"       # prints the DSN to give to a Sentry SDK
 echo 'a-password' | cargo run -- create-superuser you@example.com   # to log in with (unless the DB has users)
-cargo run -- serve                         # HTTP on 127.0.0.1:8000 + 4 workers
+npm install && npm run build               # the frontend, into frontend/dist/ (npm run dev: Vite on :3000)
+cargo run -- serve                         # HTTP on 127.0.0.1:8000 + 4 workers, serving frontend/dist/
 ```
 
 `bugsink worker` runs workers without HTTP, for scaling digestion separately.

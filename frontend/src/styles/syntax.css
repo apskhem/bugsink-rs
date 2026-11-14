@@ -1,0 +1,145 @@
+/* highlight.js's classes on upstream's pygments palette (the `.syntax-coloring` rules in styles/index.css: pygments'
+   default style, and monokai in dark mode), token kind by token kind. */
+
+.syntax-coloring .hljs-comment,
+.syntax-coloring .hljs-quote {
+  color: #3d7b7b;
+  font-style: italic;
+} /* Comment */
+.syntax-coloring .hljs-keyword,
+.syntax-coloring .hljs-literal {
+  color: #008000;
+  font-weight: bold;
+} /* Keyword, Keyword.Constant */
+.syntax-coloring .hljs-built_in,
+.syntax-coloring .hljs-variable.language_ {
+  color: #008000;
+} /* Name.Builtin, Name.Builtin.Pseudo */
+.syntax-coloring .hljs-type {
+  color: #b00040;
+} /* Keyword.Type */
+.syntax-coloring .hljs-number {
+  color: #666666;
+} /* Literal.Number */
+.syntax-coloring .hljs-operator {
+  color: #666666;
+} /* Operator */
+.syntax-coloring .hljs-string {
+  color: #ba2121;
+} /* Literal.String */
+.syntax-coloring .hljs-char.escape_ {
+  color: #aa5d1f;
+  font-weight: bold;
+} /* Literal.String.Escape */
+.syntax-coloring .hljs-subst {
+  color: #a45a77;
+  font-weight: bold;
+} /* Literal.String.Interpol */
+.syntax-coloring .hljs-regexp {
+  color: #a45a77;
+} /* Literal.String.Regex */
+.syntax-coloring .hljs-symbol {
+  color: #19177c;
+} /* Literal.String.Symbol */
+.syntax-coloring .hljs-title,
+.syntax-coloring .hljs-title.function_ {
+  color: #0000ff;
+} /* Name.Function */
+.syntax-coloring .hljs-title.class_,
+.syntax-coloring .hljs-title.class_.inherited__ {
+  color: #0000ff;
+  font-weight: bold;
+} /* Name.Class */
+.syntax-coloring .hljs-meta {
+  color: #9c6500;
+} /* Comment.Preproc */
+.syntax-coloring .hljs-meta .hljs-string {
+  color: #ba2121;
+}
+.syntax-coloring .hljs-attr,
+.syntax-coloring .hljs-attribute {
+  color: #687822;
+} /* Name.Attribute */
+.syntax-coloring .hljs-name,
+.syntax-coloring .hljs-selector-tag {
+  color: #008000;
+  font-weight: bold;
+} /* Name.Tag */
+.syntax-coloring .hljs-selector-class,
+.syntax-coloring .hljs-selector-id {
+  color: #0000ff;
+} /* Name.Class (unbolded, as pygments' CSS lexer) */
+.syntax-coloring .hljs-variable,
+.syntax-coloring .hljs-template-variable {
+  color: #19177c;
+} /* Name.Variable */
+.syntax-coloring .hljs-section {
+  color: #000080;
+  font-weight: bold;
+} /* Generic.Heading */
+.syntax-coloring .hljs-addition {
+  color: #008400;
+} /* Generic.Inserted */
+.syntax-coloring .hljs-deletion {
+  color: #a00000;
+} /* Generic.Deleted */
+.syntax-coloring .hljs-emphasis {
+  font-style: italic;
+} /* Generic.Emph */
+.syntax-coloring .hljs-strong {
+  font-weight: bold;
+} /* Generic.Strong */
+
+[data-theme="dark"] .syntax-coloring .hljs-comment,
+[data-theme="dark"] .syntax-coloring .hljs-quote,
+[data-theme="dark"] .syntax-coloring .hljs-meta {
+  color: #959077;
+}
+[data-theme="dark"] .syntax-coloring .hljs-keyword,
+[data-theme="dark"] .syntax-coloring .hljs-literal,
+[data-theme="dark"] .syntax-coloring .hljs-type {
+  color: #66d9ef;
+  font-weight: normal;
+}
+[data-theme="dark"] .syntax-coloring .hljs-built_in,
+[data-theme="dark"] .syntax-coloring .hljs-variable,
+[data-theme="dark"] .syntax-coloring .hljs-variable.language_,
+[data-theme="dark"] .syntax-coloring .hljs-template-variable,
+[data-theme="dark"] .syntax-coloring .hljs-punctuation,
+[data-theme="dark"] .syntax-coloring .hljs-property,
+[data-theme="dark"] .syntax-coloring .hljs-section {
+  color: #f8f8f2;
+  font-weight: normal;
+}
+[data-theme="dark"] .syntax-coloring .hljs-number,
+[data-theme="dark"] .syntax-coloring .hljs-char.escape_ {
+  color: #ae81ff;
+  font-weight: normal;
+}
+[data-theme="dark"] .syntax-coloring .hljs-operator,
+[data-theme="dark"] .syntax-coloring .hljs-name,
+[data-theme="dark"] .syntax-coloring .hljs-selector-tag,
+[data-theme="dark"] .syntax-coloring .hljs-deletion {
+  color: #ff4689;
+  font-weight: normal;
+}
+[data-theme="dark"] .syntax-coloring .hljs-string,
+[data-theme="dark"] .syntax-coloring .hljs-meta .hljs-string,
+[data-theme="dark"] .syntax-coloring .hljs-subst,
+[data-theme="dark"] .syntax-coloring .hljs-regexp,
+[data-theme="dark"] .syntax-coloring .hljs-symbol {
+  color: #e6db74;
+  font-weight: normal;
+}
+[data-theme="dark"] .syntax-coloring .hljs-title,
+[data-theme="dark"] .syntax-coloring .hljs-title.function_,
+[data-theme="dark"] .syntax-coloring .hljs-title.class_,
+[data-theme="dark"] .syntax-coloring .hljs-title.class_.inherited__,
+[data-theme="dark"] .syntax-coloring .hljs-attr,
+[data-theme="dark"] .syntax-coloring .hljs-attribute,
+[data-theme="dark"] .syntax-coloring .hljs-selector-class,
+[data-theme="dark"] .syntax-coloring .hljs-selector-id,
+[data-theme="dark"] .syntax-coloring .hljs-addition {
+  color: #a6e22e;
+  font-weight: normal;
+}

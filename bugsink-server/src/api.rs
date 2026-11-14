@@ -86,6 +86,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/auth/request-reset-password", post(self_service::request_reset_password))
         .route("/api/v1/me/password", post(self_service::change_password))
         .route("/api/v1/me", get(accounts::me).patch(self_service::update_preferences))
+        .route("/api/v1/projects/{project_id}/summary", get(project_summary))
         .route("/api/v1/projects/{project_id}/issues", get(list_issues))
         .route("/api/v1/projects/{project_id}/issues/actions", post(project_issue_actions))
         .route("/api/v1/issues", get(global_issue_list))
@@ -282,9 +283,21 @@ impl IssueListQuery {
         let issues: Vec<IssueSummary> = qb.build_query_as().fetch_all(pool).await?;
         let ids: Vec<Uuid> = issues.iter().map(|i| i.id).collect();
         let mut sparklines = pages::issue_list_sparklines(pool, &ids, Utc::now()).await?;
+        let project_ids: Vec<i64> = issues.iter().map(|i| i.project_id).collect();
+        let slugs: std::collections::HashMap<i64, String> =
+            sqlx::query_as("SELECT id, slug FROM projects_project WHERE id = ANY($1)")
+                .bind(project_ids)
+                .fetch_all(pool)
+                .await?
+                .into_iter()
+                .collect();
         let items = issues
             .into_iter()
-            .map(|issue| IssueListItem { sparkline: sparklines.remove(&issue.id).unwrap_or_default(), issue })
+            .map(|issue| IssueListItem {
+                sparkline: sparklines.remove(&issue.id).unwrap_or_default(),
+                project_slug: slugs.get(&issue.project_id).cloned().unwrap_or_default(),
+                issue,
+            })
             .collect();
         Ok(page.paged(items))
     }
@@ -296,6 +309,50 @@ struct IssueListItem {
     issue: IssueSummary,
     /// Events in each of the last 24 hours, the current one last.
     sparkline: Vec<i32>,
+    /// For the friendly id (`SLUG-<digest_order>`), on the global list too.
+    project_slug: String,
+}
+
+/// What pages about a project show of it (the issue list's header and actions, the navigation), for anyone with
+/// access to the project's issues.
+#[derive(Serialize, sqlx::FromRow)]
+struct ProjectSummary {
+    id: i64,
+    name: String,
+    slug: String,
+    team_id: Option<Uuid>,
+    team_name: Option<String>,
+    has_releases: bool,
+    digested_event_count: i32,
+    /// Your accepted membership's role (`ROLE_MEMBER`/`ROLE_ADMIN`), if any.
+    my_role: Option<i32>,
+    #[sqlx(skip)]
+    is_admin: bool,
+    #[sqlx(skip)]
+    latest_release: Option<String>,
+}
+
+async fn project_summary(
+    State(state): State<ApiState>,
+    CurrentUser { user, .. }: CurrentUser,
+    Path(project_id): Path<i64>,
+) -> ApiResult<ProjectSummary> {
+    let summary: Option<ProjectSummary> = sqlx::query_as(
+        "SELECT p.id, p.name, p.slug, p.team_id, t.name AS team_name, p.has_releases, p.digested_event_count,
+                (SELECT role FROM projects_projectmembership
+                 WHERE project_id = p.id AND user_id = $2 AND accepted) AS my_role
+         FROM projects_project p LEFT JOIN teams_team t ON t.id = p.team_id
+         WHERE p.id = $1 AND NOT p.is_deleted",
+    )
+    .bind(project_id)
+    .bind(user.id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let mut summary = summary.ok_or(ApiError::NotFound)?;
+    require_project_access(&state.pool, &user, project_id).await?;
+    summary.is_admin = memberships::is_project_admin(&state.pool, &user, project_id).await?;
+    summary.latest_release = crate::releases::latest_release_version(&state.pool, project_id).await?;
+    Ok(Json(summary))
 }
 
 /// `project_membership_required`: the project is looked up first (deleted or not), then access is checked.

@@ -1,8 +1,23 @@
 # Frontend (CSR)
 
-A standalone JS workspace, separate from the Cargo workspace. The backend only needs `frontend/dist/` to contain
-`index.html` plus assets: `bugsink serve` serves that directory and falls back to `index.html` for any path that
-is not an API route, so client-side routing works on reload.
+Upstream Bugsink's pages as a React app (React 19, TypeScript strict, Tailwind 4, react-router, Zodios + zod), an npm
+workspace of the root `package.json`. The backend only needs `frontend/dist/` to contain `index.html` plus assets:
+`bugsink serve` serves that directory and falls back to `index.html` for any path that is not an API route, so
+client-side routing works on reload.
+
+```sh
+npm install          # at the repository root (one lockfile for the workspace)
+npm run dev          # Vite on :3000, proxying /api to the backend (BUGSINK_BACKEND, default http://127.0.0.1:8000)
+npm run build        # type-check, then frontend/dist/ for `bugsink serve`
+npm run check        # type-check only;  npm run lint / npm run fmt
+```
+
+Layout (`src/`): `services/` the API clients (one Zodios client per area, all on the axios instance in
+`services/http.ts`, which sends the CSRF header), `contexts/session.tsx` the logged-in user and site settings,
+`common/` layouts (upstream's `base.html`, `bare_base.html`, `barest_base.html`), shared components and the route
+table (`common/constants/routes.ts`: upstream's URLs), `modules/<area>/` the pages, each area registering its routes
+in `routes.tsx`. Markup and Tailwind classes are upstream's (its theme is ported in `styles/index.css`); fonts and
+images are upstream's too (`public/`).
 
 Contract with the backend:
 
@@ -23,8 +38,9 @@ each page needs; ✅ means it exists already.
 | Page | Upstream template | API |
 |---|---|---|
 | Login / logout | `templates/bugsink/login.html`, `users/logged_out.html` | ✅ `POST /api/v1/auth/login`, `/logout`, `GET /me` |
-| Signup, confirm email, reset password | `templates/signup.html`, `users/{resend_confirmation,request_reset_password,reset_password}.html` | ✅ `GET /auth/settings` (signup allowed?), `POST /auth/signup`, `GET/POST /auth/confirm-email/{token}`, `POST /auth/resend-confirmation`, `POST /auth/request-reset-password`, `GET/POST /auth/reset-password/{token}` |
+| Signup, confirm email, reset password | `templates/signup.html`, `users/{resend_confirmation,request_reset_password,reset_password}.html` | ✅ `GET /auth/settings` (signup allowed?, site title, `single_team`), `POST /auth/signup`, `GET/POST /auth/confirm-email/{token}`, `POST /auth/resend-confirmation`, `POST /auth/request-reset-password`, `GET/POST /auth/reset-password/{token}` |
 | Preferences, change password | `users/{preferences,change_password}.html` | ✅ `GET/PATCH /me` (`send_email_alerts`, `theme_preference`, `language`), `POST /me/password` |
+| Project header (any member) | n/a | ✅ `GET /projects/{id}/summary` (name, slug, team, releases, your role, admin?) |
 | Project list | `projects/project_list.html` | ✅ `GET /projects?tab=mine\|teams\|other` (incl. 24h sparkline), `POST /projects/{id}/join\|leave` |
 | Project new / edit / delete | `projects/project_{new,edit}.html` | ✅ `GET /projects/new` (teams, defaults), `POST /projects`, `GET/PATCH/DELETE /projects/{id}` |
 | Project members, invite, accept | `projects/project_members*.html`, `project_member_settings.html` | ✅ `/projects/{id}/members[/{user_id}[/reinvite\|/invite-link]]`, `POST /projects/{id}/accept\|decline` |
