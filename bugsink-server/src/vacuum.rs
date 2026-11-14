@@ -6,7 +6,8 @@
 //! - tags: tag values no event or issue tag uses, then tag keys without values
 //! - deleted issues: finishing the deletion of issues marked as deleted (normally done by background jobs)
 //!
-//! TODO(parity): the command's files, old-events (`MAX_EVENT_AGE_DAYS`), ingest-dir and orphaned-issues parts.
+//! SKIPPED(parity) (optional extras, see the README): the command's files, old-events (`MAX_EVENT_AGE_DAYS`),
+//! ingest-dir and orphaned-issues parts.
 
 use bugsink_db::{PgPool, Postgres, Transaction};
 use uuid::Uuid;

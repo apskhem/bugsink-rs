@@ -7,7 +7,7 @@
 //! As with upstream's tasks, nothing is retried once something may have been sent: failures are logged, and for
 //! messaging services also stored on the service's row.
 //!
-//! TODO(parity): `TIME_ZONE` (dates in unmute reasons are UTC).
+//! SKIPPED(parity) (optional extras, see the README): `TIME_ZONE` (dates in unmute reasons are UTC).
 
 pub(crate) mod email;
 pub mod messaging;

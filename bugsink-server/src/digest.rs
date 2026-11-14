@@ -8,8 +8,7 @@
 //! zero retention), installation/project quotas (`crate::quota`), alerts (enqueued for `crate::alerts`), volume-based
 //! unmute, browser/OS tags from the User-Agent header.
 //!
-//! TODO(parity), in order of importance for running in production:
-//! - minidumps, `VALIDATE_ON_DIGEST`, file-based event storage
+//! SKIPPED(parity) (optional extras, see the README): minidumps, `VALIDATE_ON_DIGEST`, file-based event storage.
 
 mod counts;
 pub(crate) mod releases;

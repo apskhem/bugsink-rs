@@ -9,7 +9,8 @@
 //! The client's address (for `remote_addr` and `{{auto}}` user IPs) is the peer's, or behind a proxy taken from a
 //! header (`crate::proxy`).
 //!
-//! TODO(parity): `/minidump/` and `/security/` (CSP reports) endpoints; a short-lived cache of project keys.
+//! SKIPPED(parity) (optional extras, see the README): `/minidump/` and `/security/` (CSP reports) endpoints.
+//! TODO(parity): a short-lived cache of project keys.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -200,7 +201,7 @@ async fn envelope_endpoint(
     request.authenticate(&state, dsn_key).await?;
 
     // Upstream digests at most one event per envelope, identified by the envelope header's event_id.
-    // TODO(parity): minidump attachments (`attachment_type: event.minidump`).
+    // SKIPPED(parity): minidump attachments (`attachment_type: event.minidump`).
     let events: Vec<_> = parsed.items.iter().filter(|item| item.headers.ty == "event").collect();
     let header_event_id = parsed.headers.extra.get("event_id").and_then(Value::as_str).map(str::to_owned);
     let response = Json(json!({ "id": header_event_id }));

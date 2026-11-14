@@ -11,8 +11,8 @@
 //! Where upstream's view fails on malformed event data (a 500), this still gives what it can. Where upstream gives up
 //! on a step and carries on (the `_meta` annotations, sourcemaps), it stops at the same point.
 //!
-//! TODO(parity): applying uploaded sourcemaps (frames get their debug id as if no sourcemap was uploaded) and the
-//! event details' list of sourcemap images.
+//! SKIPPED(parity) (optional extras, see the README): applying uploaded sourcemaps (frames get their debug id as
+//! if no sourcemap was uploaded) and the event details' list of sourcemap images.
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;

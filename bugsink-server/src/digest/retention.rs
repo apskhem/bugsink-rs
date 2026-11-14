@@ -7,7 +7,8 @@
 //! on the total until enough events are above it, newest epochs first, sparing `never_evict` events unless nothing else
 //! is left.
 //!
-//! TODO(parity): events in file-based storage (`storage_backend`) are deleted from the table but not from storage.
+//! SKIPPED(parity) (optional extras, see the README): events in file-based storage (`storage_backend`) are deleted
+//! from the table but not from storage.
 
 use std::collections::HashMap;
 

@@ -96,26 +96,44 @@ installation today; viewing and managing issues still needs upstream's UI (not a
 
 In order of importance for production use (code-level gaps also have a `TODO(parity)` where they belong):
 
-1. **The UI's API.** `/api/v1` has login, logout and the current user; the project and global issue lists (tabs,
-   sorts, search, sparklines) with issue actions; the issue pages (header, tags, history and comments, groupings,
-   events with navigation, search and upstream's display shaping, hourly counts); teams, projects, members and
-   messaging services; accounts; the installation's admin. Missing:
-   - applying uploaded sourcemaps to stack frames (frames only get the debug id hint) and the details tab's list of
-     sourcemap images; the issue's Markdown export
-   - system warnings from upstream's phone-home ("remote messages")
-2. **Frontend**: not started (`frontend/` holds only the plan; framework not chosen).
+1. **Frontend**: not started (`frontend/` holds only the plan; framework not chosen). Until then, viewing and managing
+   issues needs upstream's UI (not at the same time, see below).
+2. **The UI's API** is complete but for the issue's Markdown export and the system warnings from upstream's
+   phone-home ("remote messages").
 3. **Background jobs** besides digest, alerts, test messages, invitation, confirmation and password reset emails,
    and the deletion of issues and projects: phone-home.
-4. **Ingest extras**: minidumps, sourcemap and debug-file uploads (`chunk-upload`, `artifactbundle/assemble`,
-   `difs/assemble`) and applying them to stack traces, CSP reports (`/security/`), `VALIDATE_ON_DIGEST`, file-based
-   event storage (eviction deletes such events' rows but not their files).
-5. **Settings**: `TIME_ZONE` (dates in alerts are UTC). Translations: upstream shows each user its pages and form
-   messages in their language (English or Simplified Chinese); the API's messages are English.
-6. **Operations**: upstream's other management commands
-   (`vacuum`'s files, old-events, ingest-dir and orphaned-issues parts, `delete_old_events`, `cleanup_*`,
-   `make_consistent`, `create_auth_token`, ...); we have `migrate`, `create-project`, `create-superuser`,
-   `send-welcome-email`, `vacuum` (deleted issues, eventless issue tags, tags), `serve` and `worker`. `/health/ready`
-   (upstream's readiness probe) and `/api/v1/health` (which also checks the database) are there.
+
+### Skipped on purpose (optional extras)
+
+Not planned: an installation needs these only in particular setups, and works without them otherwise. In code they
+are marked `SKIPPED(parity)`.
+
+- **Sourcemap and debug-file uploads** (`sentry-cli`'s endpoints: `/api/0/` and its `chunk-upload`,
+  `artifactbundle/assemble`, `difs/assemble`) and applying them to stack traces, incl. the event details' list of
+  sourcemap images. Needed if CI runs `sentry-cli sourcemaps upload` or `debug-files upload`: those calls fail here
+  (which can fail a build step), and JavaScript stack traces stay minified (frames only get the "no sourcemap for
+  debug_id" hint).
+- **Minidumps** (`/minidump/`, `event.minidump` attachments): native crash reports (C/C++, Electron, game engines)
+  aren't processed.
+- **File-based event storage** (`FILE_EVENT_STORAGE...`; upstream's default keeps events in the database): such
+  events can't be shown, and eviction deletes their rows but not their files.
+- **CSP reports** (`/security/`) and **`VALIDATE_ON_DIGEST`**.
+- **`TIME_ZONE`**: dates in alert emails are UTC (the frontend shows times in the browser's zone).
+- **Translations**: upstream shows each user its pages and form messages in their language (English or Simplified
+  Chinese); the API's messages are English.
+- **Upstream's other management commands** (`vacuum`'s files, old-events, ingest-dir and orphaned-issues parts,
+  `delete_old_events`, `cleanup_*`, `make_consistent`, `create_auth_token`, ...). Retention and eviction happen
+  during digest as upstream's do. We have `migrate`, `create-project`, `create-superuser`, `send-welcome-email`,
+  `vacuum` (deleted issues, eventless issue tags, tags), `serve` and `worker`; `/health/ready` (upstream's readiness
+  probe) and `/api/v1/health` (which also checks the database).
+
+To check whether an existing installation uses the storage and uploads (all three 0: it doesn't):
+
+```sql
+SELECT count(*) FROM events_event WHERE storage_backend IS NOT NULL;  -- events in file-based storage
+SELECT count(*) FROM files_file;                                       -- uploaded sourcemaps and debug files
+SELECT count(*) FROM files_chunk;                                      -- uploads through sentry-cli
+```
 
 Known deliberate differences: an envelope whose event payload is not valid JSON gets a 400 at ingest (upstream returns
 200 and drops the event during digest). A search of only whitespace (or only terms the parser skips) matches
