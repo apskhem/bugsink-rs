@@ -13,7 +13,9 @@ bugsink-rs reads and writes **upstream Bugsink's own Postgres schema**, pinned t
 - Point upstream at a database bugsink-rs created or wrote to and it does the same. An empty database is bootstrapped
   with the exact schema and `django_migrations` rows that `bugsink-manage migrate` produces, so upstream sees nothing
   to migrate.
-- Our own tables are prefixed `bsrs_` (currently just the job queue); Django ignores them.
+- Our own tables are prefixed `bsrs_` (the job queue and login sessions); Django ignores them.
+- Users and passwords are upstream's (`auth_user`, Django's PBKDF2 hashes), so accounts work on both sides. Login
+  sessions are not shared: after switching, everyone logs in again.
 - On startup the database's `django_migrations` are checked against 2.6.3: a database that is behind is refused (upgrade
   it with upstream first), as is one migrated by a newer upstream unless `--allow-newer-upstream-schema` is given.
 
@@ -33,6 +35,11 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
   (by the members' notification preferences) and messaging webhooks go to a capture server (`capture.py`) and must be
   identical. All of it is done once with default settings and once with tight quotas (`MAX_EVENTS_PER_*`,
   `MAX_EMAILS_PER_MONTH`). Telegram (whose API URL is fixed) is covered by unit tests against upstream's output instead.
+- `accounts.sh`: bugsink-rs creates a superuser and upstream checks it against its own `CREATE_SUPERUSER`; upstream
+  sets up users and projects in every access situation, and bugsink-rs's UI API must allow exactly what upstream's
+  views allow (project visibility, membership access, inactive users), with login, logout and CSRF checks. Passwords
+  that bugsink-rs rehashes at login must still work upstream, and a password change upstream must end bugsink-rs's
+  sessions.
 - `user_agents.sh`: the browser/OS/device contexts (and so tags) derived from a request's User-Agent header, for the
   ~30,000 user agents in uap-core's test suite plus malformed inputs, compared with upstream's own function. The
   parser data (`bugsink-server/src/digest/ua_regexes.json`) is exported from the upstream image.
@@ -41,18 +48,17 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
 
 Ported and verified: ingest (envelope/store, quotas and 429s) and digest (grouping, issues, releases, regressions,
 time- and volume-based unmute, tags incl. User-Agent-derived ones, hourly counts, eviction and retention), alerts by
-email and messaging services, and the database bootstrap/version check. bugsink-rs can take over ingestion and
-digestion of an upstream installation today; viewing and managing issues still needs upstream's UI (not at the same
-time, see below).
+email and messaging services, login with upstream's users and passwords (sessions, CSRF, membership checks on the UI
+API), and the database bootstrap/version check. bugsink-rs can take over ingestion and digestion of an upstream
+installation today; viewing and managing issues still needs upstream's UI (not at the same time, see below).
 
 ### Not yet ported (upstream behaviour missing)
 
 In order of importance for production use (code-level gaps also have a `TODO(parity)` where they belong):
 
-1. **Authentication and the UI's API.** `/api/v1` is read-only (projects, issues, events) and has no authentication,
-   which is why `serve` binds to localhost. Missing:
-   - accounts: login/logout on upstream's session table, CSRF, signup, email confirmation, password reset,
-     preferences, change password; membership/permission checks on every endpoint
+1. **The UI's API.** `/api/v1` has login, logout and the current user; everything else is read-only (projects,
+   issues, events). Missing:
+   - accounts: signup, email confirmation, password reset, preferences, change password
    - issue actions: resolve (also by next release / in a release), mute for/until, unmute, delete; bulk actions;
      search (`q=`) and the open/resolved/muted/all tabs; tags, history (turning points, comments), groupings and
      sparkline counts per issue
@@ -91,7 +97,8 @@ bugsink-server/        the `bugsink` binary (src/main.rs: CLI, config, HTTP, in-
   src/event_counter.rs counting events over rolling windows (for quotas and volume-based unmute)
   src/quota.rs         installation/project quotas (counted in digest, enforced in both)
   src/alerts           alert emails (upstream's templates) and messaging services (Slack, Discord, ...), as jobs
-  src/api.rs           /api/v1/... JSON API for the frontend
+  src/api.rs           /api/v1/... JSON API for the frontend, with upstream's access rules
+  src/accounts         users (upstream's auth_user, Django's password hashes), login sessions, CSRF
   examples/            parity drivers used by tools/parity/
 frontend/              CSR app (separate JS workspace), built into frontend/dist/; see frontend/README.md
 tools/parity/          comparison harnesses against the official upstream image
@@ -107,6 +114,7 @@ docker compose up -d                       # Postgres 17 on :5432
 cp .env.example .env && set -a && . ./.env && set +a
 cargo run -- migrate                       # bootstrap (empty DB) or verify (existing Bugsink 2.6.3 DB)
 cargo run -- create-project "My App"       # prints the DSN to give to a Sentry SDK
+echo 'a-password' | cargo run -- create-superuser you@example.com   # to log in with (unless the DB has users)
 cargo run -- serve                         # HTTP on 127.0.0.1:8000 + 4 workers
 ```
 
@@ -124,13 +132,16 @@ Alerts too: `BASE_URL` (for links), `SITE_TITLE`; email via `EMAIL_HOST`, `EMAIL
 
 Don't run upstream and bugsink-rs against the same database at the same time: each assumes it is the only digester.
 
-The UI API has no authentication yet, which is why `serve` binds to localhost by default.
+`serve` binds to localhost by default; set `BUGSINK_BIND=0.0.0.0:8000` to expose it. `BASE_URL` also decides the UI
+API's CSRF origin check (requests from another origin are refused) and, when it is https, makes the session cookie
+`Secure`.
 
 ## Upgrading the upstream version
 
 1. Bump the image in `tools/parity/*.sh`. Regenerate `bugsink-db/upstream/` from a fresh `bugsink-manage migrate` on
    Postgres (`pg_dump --schema-only`; `--data-only --inserts` for `django_migrations`, `django_content_type` and
    `auth_permission`; the sorted `django_migrations` list).
-2. Diff upstream's `ingest/`, `issues/`, `events/`, `releases/`, `tags/`, `alerts/`, `phonehome/` and `sentry/` between
-   the versions and port the changes. Re-export the User-Agent data with `tools/parity/export_ua_regexes.py`.
+2. Diff upstream's `ingest/`, `issues/`, `events/`, `releases/`, `tags/`, `alerts/`, `phonehome/`, `sentry/`, `users/`
+   and `projects/` (access rules), and Django's password hasher, between the versions and port the changes.
+   Re-export the User-Agent data with `tools/parity/export_ua_regexes.py`.
 3. Run all parity scripts.

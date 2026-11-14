@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use axum::Router;
 use bugsink_db::PgPool;
-use bugsink_server::{Settings, api, grouping, ingest, job_registry, tasks};
+use bugsink_server::{Settings, accounts, api, grouping, ingest, job_registry, tasks};
 use clap::{Args, Parser, Subcommand};
 use tokio::sync::watch;
 use tower_http::services::{ServeDir, ServeFile};
@@ -46,11 +46,13 @@ enum Command {
     Migrate,
     /// Create a project and print its DSN. Stopgap until the UI can do it.
     CreateProject { name: String },
+    /// Create a superuser that logs in with this email address as username (upstream's `CREATE_SUPERUSER`). Reads
+    /// the password from the first line of stdin.
+    CreateSuperuser { email: String },
 }
 
 #[derive(Args)]
 struct ServeArgs {
-    /// Defaults to localhost: the UI API has no auth yet (see api.rs).
     #[arg(long, env = "BUGSINK_BIND", default_value = "127.0.0.1:8000")]
     bind: SocketAddr,
 
@@ -97,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Command::CreateProject { name } => create_project(&pool, &name, cli.settings.alerts.base_url()).await,
+        Command::CreateSuperuser { email } => create_superuser(&pool, &email).await,
     }
 }
 
@@ -109,7 +112,7 @@ async fn serve(pool: PgPool, args: ServeArgs, settings: Settings) -> anyhow::Res
 
     let app = Router::new()
         .merge(ingest::router(pool.clone(), args.max_body_bytes, settings.quotas))
-        .merge(api::router(pool.clone()))
+        .merge(api::router(api::ApiState::new(pool.clone(), settings.alerts.base_url())?))
         .fallback_service(frontend)
         .layer(TraceLayer::new_for_http());
 
@@ -159,6 +162,22 @@ async fn create_project(pool: &PgPool, name: &str, base_url: &str) -> anyhow::Re
 
     let (scheme, host) = base_url.trim_end_matches('/').split_once("://").context("base URL needs a scheme")?;
     println!("{scheme}://{}@{host}/{id}", key.simple());
+    Ok(())
+}
+
+async fn create_superuser(pool: &PgPool, email: &str) -> anyhow::Result<()> {
+    // Upstream validates the address with Django's validate_email; this only catches the obvious mistakes.
+    anyhow::ensure!(
+        email.split_once('@').is_some_and(|(local, domain)| !local.is_empty() && domain.contains('.')),
+        "{email:?} is not an email address"
+    );
+    let mut password = String::new();
+    std::io::stdin().read_line(&mut password).context("reading the password from stdin")?;
+    let password = password.strip_suffix('\n').unwrap_or(&password);
+    let password = password.strip_suffix('\r').unwrap_or(password);
+    anyhow::ensure!(!password.is_empty(), "no password on stdin");
+    let id = accounts::create_superuser(pool, email, password).await.context("creating superuser")?;
+    println!("Superuser created: {email} (id {id})");
     Ok(())
 }
 

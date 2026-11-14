@@ -10,7 +10,10 @@ Contract with the backend:
 - Data: `/api/v1/...` JSON (see `bugsink-server/src/api.rs`), served from upstream Bugsink's own tables, so the
   frontend works the same on a database that upstream wrote. Dev server should proxy `/api` to `http://127.0.0.1:8000`.
 - Do not use client routes under `/api/`: that prefix belongs to the backend (Sentry ingest + UI API).
-- Auth (TODO): same-origin session cookie, CSRF header on mutating requests.
+- Auth: `POST /api/v1/auth/login` with `{"username", "password"}` sets an HttpOnly session cookie and returns the user
+  with a `csrf_token`; `GET /api/v1/me` returns the same (401 when logged out, which is the cue to show the login
+  page). Every POST/PUT/PATCH/DELETE must send that token as `X-CSRFToken`; `POST /api/v1/auth/logout` ends the
+  session. Keep the token in memory only; after a reload, get it again from `/me`.
 
 ## Pages to port
 
@@ -19,7 +22,7 @@ each page needs; ✅ means it exists already.
 
 | Page | Upstream template | API |
 |---|---|---|
-| Login / logout | `templates/bugsink/login.html`, `users/logged_out.html` | `POST /api/v1/auth/login`, `/logout` |
+| Login / logout | `templates/bugsink/login.html`, `users/logged_out.html` | ✅ `POST /api/v1/auth/login`, `/logout`, `GET /me` |
 | Signup, confirm email, reset password | `templates/signup.html`, `users/{resend_confirmation,request_reset_password,reset_password}.html` | `/api/v1/auth/*` |
 | Preferences, change password | `users/{preferences,change_password}.html` | `/api/v1/me` |
 | Project list | `projects/project_list.html` | ✅ `GET /projects` |
