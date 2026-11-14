@@ -1,7 +1,7 @@
 -- The management state of a Bugsink database, comparable across databases: natural keys instead of random ids, and
 -- what a login changes (last_login, rehashed passwords) left out. One row per line, fields separated by " | ".
 SELECT concat_ws(' | ', 'user', email, username, is_active, is_superuser, first_name, last_name,
-                 password <> '' AND password NOT LIKE '!%')
+                 password <> '' AND password NOT LIKE '!%', send_email_alerts, theme_preference, language)
 FROM auth_user ORDER BY email;
 SELECT concat_ws(' | ', 'team', name, visibility) FROM teams_team ORDER BY name;
 SELECT concat_ws(' | ', 'team_member', t.name, u.email, m.role, m.accepted, coalesce(m.send_email_alerts::text, 'null'))

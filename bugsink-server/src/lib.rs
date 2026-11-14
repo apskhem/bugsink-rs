@@ -46,6 +46,10 @@ pub fn job_registry(settings: &Settings) -> tasks::Registry {
         })
         .register(issues::deletion::JOB_KIND, issues::deletion::handle_job)
         .register(projects::DELETE_JOB_KIND, projects::handle_delete_job)
+        .register(accounts::self_service::JOB_KIND, {
+            let alerts = alerts.clone();
+            move |pool, payload| accounts::self_service::handle_job(pool, payload, alerts.clone())
+        })
         .register(memberships::INVITE_JOB_KIND, {
             let alerts = alerts.clone();
             move |pool, payload| memberships::handle_invite_job(pool, payload, alerts.clone())

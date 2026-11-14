@@ -36,6 +36,9 @@ pub struct UserSettings {
     /// Seconds an email verification (invitation, password reset) link stays valid.
     #[arg(long, env = "USER_REGISTRATION_VERIFY_EMAIL_EXPIRY", default_value_t = 7 * 24 * 60 * 60)]
     pub user_registration_verify_email_expiry: i64,
+    /// New users signing up have to confirm their email address before they can log in.
+    #[arg(long, env = "USER_REGISTRATION_VERIFY_EMAIL", default_value = "true", value_parser = py_bool)]
+    pub user_registration_verify_email: bool,
     /// Who may create teams: CB_ANYBODY, CB_MEMBERS, CB_ADMINS or CB_NOBODY.
     #[arg(long, env = "TEAM_CREATION", default_value = "CB_MEMBERS")]
     pub team_creation: String,
@@ -48,6 +51,11 @@ impl UserSettings {
 
     fn user_registration(&self) -> &str {
         if self.single_user { "CB_NOBODY" } else { &self.user_registration }
+    }
+
+    /// Signing up is for `USER_REGISTRATION=CB_ANYBODY` only.
+    pub fn signup_allowed(&self) -> bool {
+        self.user_registration() == "CB_ANYBODY"
     }
 
     /// `user_can_create_team`.
@@ -357,7 +365,10 @@ async fn create_invited_user(tx: &mut Transaction<'_, Postgres>, email: &str) ->
 }
 
 /// `EmailVerification.objects.create(user=user, email=user.username)` with `secrets.token_urlsafe()`.
-async fn create_email_verification(tx: &mut Transaction<'_, Postgres>, user_id: i64) -> sqlx::Result<String> {
+pub(crate) async fn create_email_verification(
+    tx: &mut Transaction<'_, Postgres>,
+    user_id: i64,
+) -> sqlx::Result<String> {
     let mut bytes = [0u8; 32];
     rand::fill(&mut bytes);
     let token = URL_SAFE_NO_PAD.encode(bytes);

@@ -56,7 +56,36 @@ MESSAGING = [
     step(ALICE, "services", project="web-app"),
 ]
 
+DORA = "dora@example.org"
+ACCOUNTS = [
+    # signing up (email mode: the address is confirmed by email first; links mode: USER_REGISTRATION_VERIFY_EMAIL off)
+    step(DORA, "signup", email="not-an-email", password="lovelace-quantum-77"),
+    step(DORA, "signup", email=ALICE, password="lovelace-quantum-77"),  # taken
+    step(DORA, "signup", email="a!b@example.org", password="lovelace-quantum-77"),  # not a valid username
+    step(DORA, "signup", email=DORA, password="12345678"),  # common, numeric
+    step(DORA, "signup", email=DORA, password="dora.example"),  # too similar to the username
+    step(DORA, "signup", email=" " + DORA + " ", password="lovelace-quantum-77"),
+    step(DORA, "signup", email=DORA, password="lovelace-quantum-77"),  # email mode: waiting for confirmation
+    step(DORA, "resend_confirmation", email=DORA, modes=["email"]),
+    step(DORA, "resend_confirmation", email=ALICE),  # already confirmed
+    step(DORA, "resend_confirmation", email="nobody@example.org"),
+    step(DORA, "confirm_email", token_for=DORA, modes=["email"]),
+    step(DORA, "team_list", tab="other"),  # logged in either way
+    # resetting a password, preferences, changing a password
+    step(BOB, "request_reset_password", email="nobody@example.org"),
+    step(BOB, "request_reset_password", email="not an email"),
+    step(BOB, "request_reset_password", email=BOB),
+    step(BOB, "reset_password", token_for=BOB, password="Bob-has-a-new-1"),
+    step(BOB, "preferences", send_email_alerts=False, theme_preference="neon", language="en"),
+    step(BOB, "preferences", send_email_alerts=False, theme_preference="dark", language="zh-hans"),
+    step(CAROL, "change_password", old_password="wrong", new_password="lovelace-quantum-77"),
+    step(CAROL, "change_password", old_password="pw-carol", new_password="carol"),
+    step(CAROL, "change_password", old_password="pw-carol", new_password="lovelace-quantum-77"),
+    step(CAROL, "team_list", tab="mine"),  # this session still works
+]
+
 steps = [
+    *ACCOUNTS,
     step(BOB, "team_list", tab="mine"),
     step(ALICE, "team_create", name="Alpha", visibility=10),
     step(ALICE, "team_create", name="Alpha", visibility=10),  # taken

@@ -4,6 +4,7 @@
 # database snapshot (admin_snapshot.sql) afterwards. MODE (email/links) skips the other mode's steps.
 import json
 import os
+import re
 import sys
 import uuid
 from unittest import mock
@@ -14,6 +15,7 @@ from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
 from django.db import IntegrityError, connection
 from django.http import Http404, HttpResponse
 from django.test import RequestFactory
+from django.utils import translation
 
 import django.contrib.messages.api
 import projects.views as pv
@@ -78,7 +80,9 @@ def nullbool(v):
 
 def run(step):
     op, s = step["op"], step
-    me = User.objects.get(email=s["as"]) if op not in ("accept_new_user", "reset_password") else AnonymousUser()
+    anonymous = ("accept_new_user", "reset_password", "signup", "confirm_email", "resend_confirmation",
+                 "request_reset_password")
+    me = User.objects.get(email=s["as"]) if op not in anonymous else AnonymousUser()
     kind = "team" if op.startswith("team") else "project"
     group = {"team": tv, "project": pv}[kind]
     pk = (lambda: {"team_pk": team_pk(s["team"])} if kind == "team" else {"project_pk": project_pk(s["project"])})
@@ -93,12 +97,14 @@ def run(step):
         r.user, r.session = me, SessionStore()
         return r
 
-    project_fields = lambda: {k: s[k] for k in ("name", "visibility", "retention_max_event_count", "grouping_mechanism")}  # noqa
+    project_fields = lambda: {  # noqa
+        k: s[k] for k in ("name", "visibility", "retention_max_event_count", "grouping_mechanism")}
     calls = {
         "team_create": lambda: (tv.team_new, post({"name": s["name"], "visibility": s["visibility"]}), {}),
         "team_edit": lambda: (tv.team_edit, post({"name": s["name"], "visibility": s["visibility"]}), pk()),
         "team_delete": lambda: (tv.team_edit, post({"action": "delete"}), pk()),
-        "team_join": lambda: (tv.team_list, post({"action": f"join:{team_pk(s['team'])}"}), {"ownership_filter": "mine"}),
+        "team_join": lambda: (tv.team_list, post({"action": f"join:{team_pk(s['team'])}"}),
+                              {"ownership_filter": "mine"}),
         "team_leave": lambda: (tv.team_list, post({"action": f"leave:{team_pk(s['team'])}"}),
                                {"ownership_filter": "mine"}),
         "team_list": lambda: (tv.team_list, get(), {"ownership_filter": s["tab"]}),
@@ -133,6 +139,19 @@ def run(step):
         "service_test": lambda: (pv.project_alerts_setup, post({"action": f"test:{service_id()}"}), pk()),
         "services": lambda: (pv.project_alerts_setup, get(), pk()),
     })
+    calls.update({
+        "signup": lambda: (uv.signup, post({"username": s["email"], "password1": s["password"],
+                                            "password2": s["password"]}), {}),
+        "confirm_email": lambda: (uv.confirm_email, post({}), {"token": token_for(s["token_for"])}),
+        "resend_confirmation": lambda: (uv.resend_confirmation, post({"email": s["email"]}), {}),
+        "request_reset_password": lambda: (uv.request_reset_password, post({"email": s["email"]}), {}),
+        "preferences": lambda: (uv.preferences, post({
+            "send_email_alerts": str(s["send_email_alerts"]), "theme_preference": s["theme_preference"],
+            "language": s["language"]}), {}),
+        "change_password": lambda: (uv.change_password, post({
+            "old_password": s["old_password"], "new_password1": s["new_password"],
+            "new_password2": s["new_password"]}), {}),
+    })
     for k in ("team", "project"):
         mod = {"team": tv, "project": pv}[k]
         calls.update({
@@ -155,6 +174,7 @@ def run(step):
         })
 
     result = {"n": s["n"], "outcome": None, "errors": None, "link": None, "read": None, "needs_password": None}
+    translation.activate("en")  # a step changing preferences activates that user's language; bugsink-rs has English
     captured.clear()
     levels.clear()
     try:
@@ -179,7 +199,13 @@ def run(step):
             result["outcome"] = "refused"  # not accepted yet: sent to the invitation instead
         elif response.status_code == 200 and form_errors:
             result["outcome"] = "invalid"
-            result["errors"] = {"password" if k.startswith("new_password") else k: list(v) for k, v in form_errors.items()}
+            rename = {"signup": {"username": "email", "password1": "password", "password2": "password"},
+                      "reset_password": {"new_password1": "password", "new_password2": "password"},
+                      "change_password": {"new_password1": "new_password", "new_password2": "new_password"}}
+            result["errors"] = {}
+            for k, v in form_errors.items():
+                messages = [re.sub("<[^>]*>", "", m) for m in v]  # upstream's are HTML; ours plain text
+                result["errors"].setdefault(rename.get(op, {}).get(k, k), []).extend(messages)
         else:
             result["outcome"] = "ok"
         notice = captured.get("invite_link_notice")

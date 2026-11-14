@@ -43,8 +43,9 @@ PY
 status=0
 for mode in email links; do
     echo "=== $mode"
-    email_env=()
-    [ "$mode" = email ] && email_env=(EMAIL_HOST=@HOST@ EMAIL_PORT=@PORT@ EMAIL_USE_TLS=false)
+    email_env=(USER_REGISTRATION=CB_ANYBODY)
+    if [ "$mode" = email ]; then email_env+=(EMAIL_HOST=@HOST@ EMAIL_PORT=@PORT@ EMAIL_USE_TLS=false)
+    else email_env+=(USER_REGISTRATION_VERIFY_EMAIL=false); fi
     for db in "up_$mode" "ours_$mode"; do docker exec "$pg" createdb -U postgres "$db"; done
     rm -f "$out/capture.jsonl"
 
@@ -80,14 +81,14 @@ out, mode = sys.argv[1:]
 steps = {json.loads(l)["n"]: json.loads(l) for l in open("tools/parity/admin-steps.jsonl")}
 up = [json.loads(l) for l in open(f"{out}/upstream-{mode}.jsonl")]
 ours = [json.loads(l) for l in open(f"{out}/ours-{mode}.jsonl")]
-TOKEN = re.compile(r"/accept/[A-Za-z0-9_-]{43}/")
+TOKEN = re.compile(r"/[A-Za-z0-9_-]{43}/")  # an email verification token in a link
 UUID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 KEY = re.compile(r"//[0-9a-f]{32}@")  # a DSN's (random) project key
 CAPTURE = re.compile(r"captu\.test:8025|127\.0\.0\.1:58027")  # the capture server, as each side reaches it
 # A failed send's message names the address posted to: upstream the resolved IP (it pins it), ours the URL.
 POSTED_TO = re.compile(r"for url: [^ |\"']+")
 norm = lambda v: json.loads(POSTED_TO.sub("for url: <url>", CAPTURE.sub("<capture>", KEY.sub("//<key>@", UUID.sub(
-    "<uuid>", TOKEN.sub("/accept/<token>/", json.dumps(v, ensure_ascii=False)))))))
+    "<uuid>", TOKEN.sub("/<token>/", json.dumps(v, ensure_ascii=False)))))))
 diffs = 0
 assert len(up) == len(ours), (len(up), len(ours))
 for u, o in zip(up, ours):

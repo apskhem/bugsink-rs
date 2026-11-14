@@ -26,7 +26,7 @@ mod members;
 mod project_admin;
 mod teams;
 
-use crate::accounts::{self, CurrentUser, User};
+use crate::accounts::{self, CurrentUser, User, self_service};
 use crate::issues::pages;
 use crate::issues::{self, Action};
 use crate::search::{Search, Searched};
@@ -68,8 +68,20 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/health", get(health))
         .route("/api/v1/auth/login", post(accounts::login))
         .route("/api/v1/auth/logout", post(accounts::logout))
-        .route("/api/v1/auth/reset-password/{token}", post(accounts::reset_password))
-        .route("/api/v1/me", get(accounts::me))
+        .route(
+            "/api/v1/auth/reset-password/{token}",
+            get(self_service::check_reset_password).post(accounts::reset_password),
+        )
+        .route("/api/v1/auth/settings", get(self_service::settings))
+        .route("/api/v1/auth/signup", post(self_service::signup))
+        .route(
+            "/api/v1/auth/confirm-email/{token}",
+            get(self_service::check_confirm_email).post(self_service::confirm_email),
+        )
+        .route("/api/v1/auth/resend-confirmation", post(self_service::resend_confirmation))
+        .route("/api/v1/auth/request-reset-password", post(self_service::request_reset_password))
+        .route("/api/v1/me/password", post(self_service::change_password))
+        .route("/api/v1/me", get(accounts::me).patch(self_service::update_preferences))
         .route("/api/v1/projects/{project_id}/issues", get(list_issues))
         .route("/api/v1/projects/{project_id}/issues/actions", post(project_issue_actions))
         .route("/api/v1/issues", get(global_issue_list))

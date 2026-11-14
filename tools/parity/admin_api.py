@@ -86,8 +86,11 @@ def token_for(email):
 def run(s):
     op = s["op"]
     kind = "teams" if op.startswith("team") else "projects"
-    group = lambda: f"/api/v1/teams/{team_id(s['team'])}" if kind == "teams" else f"/api/v1/projects/{project_id(s['project'])}"  # noqa
-    me = None if op in ("accept_new_user", "reset_password") else session(s["as"])
+    group = lambda: (f"/api/v1/teams/{team_id(s['team'])}" if kind == "teams"  # noqa
+                     else f"/api/v1/projects/{project_id(s['project'])}")
+    anonymous = ("accept_new_user", "reset_password", "signup", "confirm_email", "resend_confirmation",
+                 "request_reset_password")
+    me = None if op in anonymous else session(s["as"])
     fields = lambda *keys: {k: s[k] for k in keys if k in s}  # noqa
     project_fields = ("name", "visibility", "retention_max_event_count", "grouping_mechanism")
     calls = {
@@ -97,7 +100,8 @@ def run(s):
         "team_join": lambda: ("POST", group() + "/join", None),
         "team_leave": lambda: ("POST", group() + "/leave", None),
         "team_list": lambda: ("GET", f"/api/v1/teams?tab={s['tab']}", None),
-        "project_create": lambda: ("POST", "/api/v1/projects", {"team_id": team_id(s["team"]), **fields(*project_fields)}),
+        "project_create": lambda: ("POST", "/api/v1/projects",
+                                   {"team_id": team_id(s["team"]), **fields(*project_fields)}),
         "project_edit": lambda: ("PATCH", group(), fields(*project_fields)),
         "project_delete": lambda: ("DELETE", group(), None),
         "project_join": lambda: ("POST", group() + "/join", None),
@@ -111,8 +115,9 @@ def run(s):
         "reset_password": lambda: ("POST", f"/api/v1/auth/reset-password/{token_for(s['token_for'])}",
                                    {"password": s["password"]}),
     }
-    service = lambda: one(f"SELECT id FROM alerts_messagingserviceconfig WHERE project_id = {project_id(s['project'])} "  # noqa
-                          f"AND display_name = '{s['service']}' ORDER BY id LIMIT 1") or "999999"
+    service = lambda: one(  # noqa
+        f"SELECT id FROM alerts_messagingserviceconfig WHERE project_id = {project_id(s['project'])} "
+        f"AND display_name = '{s['service']}' ORDER BY id LIMIT 1") or "999999"
     config = lambda: {k: v.replace("@CAPTURE@", capture) for k, v in s.get("config", {}).items()}  # noqa
     services = lambda: group() + "/messaging-services"  # noqa
     calls.update({
@@ -123,6 +128,14 @@ def run(s):
         "service_remove": lambda: ("DELETE", f"{services()}/{service()}", None),
         "service_test": lambda: ("POST", f"{services()}/{service()}/test", None),
         "services": lambda: ("GET", services(), None),
+    })
+    calls.update({
+        "signup": lambda: ("POST", "/api/v1/auth/signup", fields("email", "password")),
+        "confirm_email": lambda: ("POST", f"/api/v1/auth/confirm-email/{token_for(s['token_for'])}", None),
+        "resend_confirmation": lambda: ("POST", "/api/v1/auth/resend-confirmation", fields("email")),
+        "request_reset_password": lambda: ("POST", "/api/v1/auth/request-reset-password", fields("email")),
+        "preferences": lambda: ("PATCH", "/api/v1/me", fields("send_email_alerts", "theme_preference", "language")),
+        "change_password": lambda: ("POST", "/api/v1/me/password", fields("old_password", "new_password")),
     })
     for k in ("team", "project"):
         calls.update({
@@ -138,7 +151,7 @@ def run(s):
         })
     method, path, body = calls[op]()
     status, response, cookie = call(method, path, body, me)
-    if op == "reset_password" and status == 200:
+    if op in ("reset_password", "confirm_email", "signup") and status == 200:  # logged in
         sessions[s["as"]] = (cookie, response["csrf_token"])
 
     result = {"n": s["n"], "outcome": None, "errors": None, "link": None, "read": None, "needs_password": None}
@@ -158,7 +171,8 @@ def run(s):
 
 
 def read(op, r):
-    my = lambda x: [x["my_role"], x["my_accepted"], x["my_send_email_alerts"]] if x["my_role"] is not None else None  # noqa
+    my = lambda x: (  # noqa
+        [x["my_role"], x["my_accepted"], x["my_send_email_alerts"]] if x["my_role"] is not None else None)
     if op == "team_list":
         return sorted([t["name"], t["project_count"], t["member_count"], my(t)] for t in r["items"])
     if op == "project_list":

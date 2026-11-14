@@ -23,8 +23,8 @@ each page needs; ✅ means it exists already.
 | Page | Upstream template | API |
 |---|---|---|
 | Login / logout | `templates/bugsink/login.html`, `users/logged_out.html` | ✅ `POST /api/v1/auth/login`, `/logout`, `GET /me` |
-| Signup, confirm email, reset password | `templates/signup.html`, `users/{resend_confirmation,request_reset_password,reset_password}.html` | `/api/v1/auth/*` |
-| Preferences, change password | `users/{preferences,change_password}.html` | `/api/v1/me` |
+| Signup, confirm email, reset password | `templates/signup.html`, `users/{resend_confirmation,request_reset_password,reset_password}.html` | ✅ `GET /auth/settings` (signup allowed?), `POST /auth/signup`, `GET/POST /auth/confirm-email/{token}`, `POST /auth/resend-confirmation`, `POST /auth/request-reset-password`, `GET/POST /auth/reset-password/{token}` |
+| Preferences, change password | `users/{preferences,change_password}.html` | ✅ `GET/PATCH /me` (`send_email_alerts`, `theme_preference`, `language`), `POST /me/password` |
 | Project list | `projects/project_list.html` | ✅ `GET /projects?tab=mine\|teams\|other` (incl. 24h sparkline), `POST /projects/{id}/join\|leave` |
 | Project new / edit / delete | `projects/project_{new,edit}.html` | ✅ `GET /projects/new` (teams, defaults), `POST /projects`, `GET/PATCH/DELETE /projects/{id}` |
 | Project members, invite, accept | `projects/project_members*.html`, `project_member_settings.html` | ✅ `/projects/{id}/members[/{user_id}[/reinvite\|/invite-link]]`, `POST /projects/{id}/accept\|decline` |
@@ -93,6 +93,11 @@ frontend must route them: `/teams/{id}/members/accept/`, `/projects/{id}/members
 decline) and `/teams/{id}/members/accept/{token}/`, `/projects/{id}/members/accept/{token}/` (a new user: post the
 token to `accept-new-user`; with `needs_password`, have them set one with `POST /api/v1/auth/reset-password/{token}`,
 which logs them in, then accept).
+
+Accounts: signup (`{email, password}`) answers 201 with `confirmation_sent_to` when the address must be confirmed
+first, else logs in (like login). Confirming the address and setting a password with a token log in too. The emailed
+links use upstream's paths, which the frontend must route: `/accounts/confirm-email/{token}/` and
+`/accounts/reset-password/{token}/`. Themes: `system`, `light`, `dark`; languages: `auto`, `en`, `zh-hans`.
 
 Not ported: Django admin, `csrf_debug`, debug email previews. Email templates stay server-side (backend renders
 alert/invite emails).

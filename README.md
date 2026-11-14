@@ -56,11 +56,12 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
   (a 500; we show what we can) are counted, not compared.
 - `admin.sh`: team, project and membership management. A scenario of ~100 steps (creating, editing and deleting teams
   and projects, joining and leaving, inviting existing and new users, member settings, answering invitations, new
-  users setting their password, messaging services with test messages, plus what must be refused and what lists
-  show) goes through upstream's own views and through our API, on databases set up alike, once with email and once
-  without (invite links instead). After every step the outcome (incl. each form's error messages), invite links and
+  users setting their password, messaging services with test messages, signing up, confirming the address, password
+  resets, preferences and password changes, plus what must be refused and what lists show) goes through upstream's
+  own views and through our API, on databases set up alike, once with email and once
+  without (invite links instead, and signing up without confirming the address). After every step the outcome (incl. each form's error messages), invite links and
   a snapshot of users, teams, projects, memberships, tokens and messaging services must agree; at the end, the
-  invitation emails and test messages sent.
+  emails (invitations, confirmations, password resets) and test messages sent.
 - `user_agents.sh`: the browser/OS/device contexts (and so tags) derived from a request's User-Agent header, for the
   ~30,000 user agents in uap-core's test suite plus malformed inputs, compared with upstream's own function. The
   parser data (`bugsink-server/src/digest/ua_regexes.json`) is exported from the upstream image.
@@ -73,7 +74,8 @@ email and messaging services, login with upstream's users and passwords (session
 API), issue actions (single and bulk, incl. deletion), the issue lists' tabs and search, the issue pages (tags,
 history and comments, groupings, event navigation, sparkline counts, events shown as upstream shows them), team,
 project and membership management (invitations by email or link, new users setting their password, messaging
-services with test messages, project deletion), and the database bootstrap/version check. bugsink-rs can take over ingestion and digestion of an upstream
+services with test messages, project deletion), accounts (signup with email confirmation, password reset,
+preferences, changing the password), and the database bootstrap/version check. bugsink-rs can take over ingestion and digestion of an upstream
 installation today; viewing and managing issues still needs upstream's UI (not at the same time, see below).
 
 ### Not yet ported (upstream behaviour missing)
@@ -84,19 +86,18 @@ In order of importance for production use (code-level gaps also have a `TODO(par
    sorts, search, sparklines) with issue actions; the issue pages (header, tags, history and comments, groupings,
    events with navigation, search and upstream's display shaping, hourly counts); teams, projects, members and
    messaging services. Missing:
-   - accounts: signup, email confirmation, requesting a password reset, preferences, change password (setting a
-     password with an invitation's token is there)
    - applying uploaded sourcemaps to stack frames (frames only get the debug id hint) and the details tab's list of
      sourcemap images; the issue's Markdown export
    - installation: users admin, auth tokens, settings and counts pages
 2. **Frontend**: not started (`frontend/` holds only the plan; framework not chosen).
-3. **Background jobs** besides digest, alerts, test messages, invitation emails, and the deletion of issues and
-   projects: signup confirmation, password reset and welcome emails; phone-home.
+3. **Background jobs** besides digest, alerts, test messages, invitation, confirmation and password reset emails,
+   and the deletion of issues and projects: the welcome email (upstream's `send_welcome_email` command); phone-home.
 4. **Upstream's REST API** (`/api/canonical/0/`, with auth tokens) for scripts and integrations.
 5. **Ingest extras**: minidumps, sourcemap and debug-file uploads (`chunk-upload`, `artifactbundle/assemble`,
    `difs/assemble`) and applying them to stack traces, CSP reports (`/security/`), `VALIDATE_ON_DIGEST`, file-based
    event storage (eviction deletes such events' rows but not their files).
-6. **Settings**: `TIME_ZONE` (dates in alerts are UTC), `USER_REGISTRATION_VERIFY_EMAIL` (signup).
+6. **Settings**: `TIME_ZONE` (dates in alerts are UTC). Translations: upstream shows each user its pages and form
+   messages in their language (English or Simplified Chinese); the API's messages are English.
 7. **Operations**: upstream's `/health/ready` (we have `/api/v1/health`) and its other management commands
    (`vacuum`'s files, old-events, ingest-dir and orphaned-issues parts, `delete_old_events`, `cleanup_*`,
    `make_consistent`, `create_auth_token`, ...); we have `migrate`, `create-project`, `create-superuser`, `vacuum`
@@ -109,7 +110,8 @@ that aren't a list of objects, malformed sourcemap images) shows what can be sho
 upstream's management views fail with a 500 or quietly do nothing, the API answers with what's wrong: deleting a
 team whose projects have any data (409; upstream's database refuses it too), a project name whose slug would exceed
 50 characters, an unknown messaging service kind (400), changing your membership settings before accepting the
-invitation, re-sending an invitation without email set up or asking for its link with email set up (409).
+invitation, re-sending an invitation without email set up or asking for its link with email set up (409),
+re-sending the confirmation for an address nobody signed up with (404).
 
 ## Layout
 
@@ -137,7 +139,8 @@ bugsink-server/        the `bugsink` binary (src/main.rs: CLI, config, HTTP, in-
   src/event_display.rs an event as upstream's event pages show it (stack traces, details, breadcrumbs)
   src/proxy.rs         the client's address behind a reverse proxy (X-Real-IP / X-Forwarded-For)
   src/vacuum.rs        `bugsink vacuum`: cleanup of eventless issue tags, unused tags, deleted issues
-  src/accounts         users (upstream's auth_user, Django's password hashes), login sessions, CSRF
+  src/accounts         users (upstream's auth_user, Django's password hashes), login sessions, CSRF, signup and
+                       the rest of the account pages, Django's email and password validation
   examples/            parity drivers used by tools/parity/
 frontend/              CSR app (separate JS workspace), built into frontend/dist/; see frontend/README.md
 tools/parity/          comparison harnesses against the official upstream image
@@ -176,7 +179,8 @@ then taken from `X-Real-IP`, or with `USE_X_REAL_IP=false USE_X_FORWARDED_FOR=tr
 from `X-Forwarded-For` (exactly n addresses expected). Without it every event gets the proxy's address.
 
 Users, teams and projects use upstream's settings: `SINGLE_USER`, `SINGLE_TEAM`, `TEAM_CREATION` and
-`USER_REGISTRATION` (`CB_ANYBODY`, `CB_MEMBERS`, `CB_ADMINS`, `CB_NOBODY`), `USER_REGISTRATION_VERIFY_EMAIL_EXPIRY`,
+`USER_REGISTRATION` (`CB_ANYBODY`, `CB_MEMBERS`, `CB_ADMINS`, `CB_NOBODY`; signing up needs `CB_ANYBODY`),
+`USER_REGISTRATION_VERIFY_EMAIL`, `USER_REGISTRATION_VERIFY_EMAIL_EXPIRY`,
 and the retention caps `MAX_RETENTION_PER_PROJECT_EVENT_COUNT` (also caps eviction) and `MAX_RETENTION_EVENT_COUNT`.
 Invitations are emailed when email is set up (`EMAIL_HOST`, or an `EMAIL_BACKEND` other than the console/dummy
 ones); otherwise the API returns the links to pass on.

@@ -7,6 +7,7 @@
 //! cross-site form cannot send without a CORS preflight that the UI API never allows.
 
 pub mod password;
+pub mod self_service;
 pub mod validation;
 
 use axum::Json;
@@ -54,7 +55,7 @@ const USER_COLUMNS: &str = "u.id, u.username, u.email, u.first_name, u.last_name
 /// methods, so a handler that takes it cannot forget either.
 pub struct CurrentUser {
     pub user: User,
-    key_hash: Vec<u8>,
+    pub(crate) key_hash: Vec<u8>,
     csrf_token: String,
 }
 
@@ -165,7 +166,7 @@ pub async fn login(
 }
 
 /// Django's `login()`: `last_login`, a fresh session (replacing the request's), the cookie; commits `tx`.
-async fn start_session(
+pub(crate) async fn start_session(
     state: &ApiState,
     mut tx: bugsink_db::Transaction<'_, bugsink_db::Postgres>,
     headers: &HeaderMap,
@@ -286,7 +287,7 @@ fn normalize_email(email: &str) -> String {
 
 /// No `Origin` (same-origin GETs, non-browser clients) passes; a browser sends one on every cross-origin POST. It must
 /// be `BASE_URL`'s origin or match the `Host` the request was sent to (a dev server proxying to us, a second name).
-fn same_origin(headers: &HeaderMap, own_origin: &str) -> bool {
+pub(crate) fn same_origin(headers: &HeaderMap, own_origin: &str) -> bool {
     let Some(origin) = headers.get(ORIGIN) else { return true };
     let Ok(origin) = origin.to_str() else { return false };
     if origin.eq_ignore_ascii_case(own_origin) {
