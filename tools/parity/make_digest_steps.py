@@ -1,5 +1,6 @@
-"""Generates tools/parity/digest-steps.jsonl: a deterministic sequence of events to digest, interleaved with SQL
-"user actions" (resolve, mute for/until, grouping-mechanism upgrade, retention changes) applied identically to upstream and to us.
+"""Generates tools/parity/digest-steps.jsonl: a deterministic sequence of events to digest, interleaved with issue
+actions (resolve, reopen, mute, unmute, delete; on one issue or in bulk, each side with its own code) and SQL changes
+(grouping-mechanism upgrade, retention changes) applied identically to upstream and to us.
 Also sets up alert recipients and messaging services."""
 import json
 import random
@@ -104,29 +105,50 @@ def by_fingerprint(key):
     return f"(SELECT issue_id FROM issues_grouping WHERE project_id = 1 AND grouping_key = '{key}')"
 
 
-def mute_until(value, period, nr_of_periods, volume):
-    # as upstream's mute-until action: unmute once the volume is reached; the first check happens on the next event
-    conditions = json.dumps([{"period": period, "nr_of_periods": nr_of_periods, "volume": volume}])
-    return (f"UPDATE issues_issue SET is_muted = true, unmute_on_volume_based_conditions = '{conditions}', "
-            f"next_unmute_check = 0 WHERE project_id = 1 AND calculated_value = '{value}'")
+def issue_action(action, issues, bulk=False, user_id=1):
+    # issues: SQL selecting issue ids. Single: like a POST on each issue's page (skipped when not valid for its state);
+    # bulk: like a POST on project 1's issue list with those issues selected. `now` is passed in so that turning point
+    # timestamps and "mute for" deadlines are the same on both sides.
+    return lambda i: {"action": action, "issues": issues, "bulk": bulk, "project_id": 1, "user_id": user_id,
+                      "now": (T0 + timedelta(minutes=7 * i, seconds=-1)).isoformat()}
+
+
+def p1(where):
+    return f"SELECT id FROM issues_issue WHERE project_id = 1 AND {where} ORDER BY digest_order"
+
+
+def by_fingerprint(key):
+    return f"SELECT issue_id FROM issues_grouping WHERE project_id = 1 AND grouping_key = '{key}'"
 
 
 actions = {
-    30: mute_until("disk 1 full", "hour", 24, 5),
-    50: mute_until("disk 2 full", "hour", 1, 2),
-    70: mute_until("disk 3 full", "day", 1, 3),
-    40: "UPDATE issues_issue SET is_resolved = true, is_resolved_unconditionally = true "
-        "WHERE project_id = 1 AND digest_order = 1",
-    60: "UPDATE issues_issue SET is_resolved = true, is_resolved_by_next_release = true "
-        "WHERE project_id = 1 AND digest_order = 2",
-    80: "UPDATE issues_issue SET is_resolved = true, fixed_at = fixed_at || E'1.1.0\\n' "
-        f"WHERE id = {by_fingerprint('resolve-me')}",  # regresses on events in later releases
-    100: f"UPDATE issues_issue SET is_muted = true, unmute_after = '{at(130)}' WHERE id = {by_fingerprint('mute-me')}",
-    185: "UPDATE issues_issue SET is_resolved = true, fixed_at = fixed_at || E'releasewithslashes\\n' "
-         f"WHERE id = {by_fingerprint('slash-me')}",  # event.release != sanitized version: upstream drops the event
+    # unmuted again once the volume is reached; the first check happens on the next event
+    30: issue_action("mute_until:hour,24,5", p1("calculated_value = 'disk 1 full'"), bulk=True),
+    50: issue_action("mute_until:hour,1,2", p1("calculated_value = 'disk 2 full'"), bulk=True),
+    70: issue_action("mute_until:day,1,3", p1("calculated_value = 'disk 3 full'"), bulk=True),
+    40: issue_action("resolve", p1("digest_order = 1")),
+    60: issue_action("resolved_next", p1("digest_order = 2")),
+    80: issue_action("resolved_release:1.1.0", by_fingerprint("resolve-me")),  # regresses on events in later releases
+    100: issue_action("mute_for:hour,3,None", by_fingerprint("mute-me"), user_id=5),  # unmuted by an event after 3h
+    # bulk resolve leaves muted issues muted, as upstream's re-filtered updates do; mute_for in bulk sets no deadline
+    110: issue_action("resolve", p1("digest_order BETWEEN 3 AND 6"), bulk=True),
+    115: issue_action("mute_for:day,1,None", p1("digest_order BETWEEN 7 AND 9"), bulk=True),
+    125: issue_action("reopen", p1("digest_order IN (1, 3)")),
+    130: issue_action("unmute", p1("true"), bulk=True),  # muted and unmuted (unapplied) alike
+    135: issue_action("mute", p1("digest_order = 10")),
+    145: issue_action("resolved_release:1.1.0", p1("digest_order BETWEEN 10 AND 12"), bulk=True),
+    155: issue_action("resolved_next", p1("digest_order BETWEEN 13 AND 15"), bulk=True),
+    160: issue_action("unmute", p1("digest_order IN (10, 16)")),  # 16: not muted, so not valid
+    165: issue_action("delete", p1("digest_order = 17")),  # events of its group open a new issue afterwards
+    175: issue_action("delete", p1("digest_order IN (18, 19)"), bulk=True),
+    180: issue_action("reopen", p1("digest_order BETWEEN 3 AND 6"), bulk=True),
+    # event.release != sanitized version: upstream drops the event
+    185: issue_action("resolved_release:releasewithslashes", by_fingerprint("slash-me")),
+    150: issue_action("resolve", "SELECT id FROM issues_issue WHERE project_id = 2 AND digest_order = 1"),
+}
+sql_actions = {
     120: "UPDATE projects_project SET grouping_mechanism = 'bugsink-v2', previous_grouping_mechanism = 'bugsink-v1', "
          f"grouping_mechanism_upgraded_at = '{at(120)}' WHERE id = 1",
-    150: "UPDATE issues_issue SET is_resolved = true WHERE project_id = 2 AND digest_order = 1",
     # eviction: project 2 evicts 1 at a time from the start (max 15); project 1 drops to 50 at once (one big eviction,
     # then 2 at a time); zero retention deletes all of project 2's events; then never_evict events have to go too.
     140: "UPDATE projects_project SET retention_max_event_count = 50 WHERE id = 1",
@@ -144,8 +166,10 @@ USER_AGENTS = [
 ]
 event_ids = []
 for i in range(200):
+    if i in sql_actions:
+        steps.append({"sql": sql_actions[i]})
     if i in actions:
-        steps.append({"sql": actions[i]})
+        steps.append(actions[i](i))
 
     project_id = 1 if random.random() < 0.8 else 2
     release = release_phases[min(i // 30, len(release_phases) - 1)]

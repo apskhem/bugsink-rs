@@ -8,6 +8,7 @@ pub mod digest;
 mod event_counter;
 pub mod grouping;
 pub mod ingest;
+pub mod issues;
 pub mod protocol;
 pub mod quota;
 pub mod tasks;
@@ -31,6 +32,7 @@ pub fn job_registry(settings: &Settings) -> tasks::Registry {
     tasks::Registry::default()
         .register(digest::JOB_KIND, move |pool, payload| digest::handle_job(pool, payload, quotas))
         .register(digest::retention::DELETE_BY_AGE_JOB_KIND, digest::retention::handle_delete_by_age_job)
+        .register(issues::deletion::JOB_KIND, issues::deletion::handle_job)
         .register(alerts::JOB_KIND, move |pool, payload| alerts::handle_job(pool, payload, alerts.clone()))
         .register(alerts::messaging::JOB_KIND, move |pool, payload| {
             alerts::messaging::handle_job(pool, payload, messaging.clone())

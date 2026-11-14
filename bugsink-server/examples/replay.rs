@@ -1,12 +1,13 @@
-//! Replays digest steps (JSONL on stdin, see tools/parity/make_digest_steps.py) through this crate's digest. Jobs that
-//! digest schedules (zero-retention deletion, alerts) run right after each step, like upstream's on-commit tasks in
-//! eager mode.
+//! Replays digest steps (JSONL on stdin, see tools/parity/make_digest_steps.py) through this crate's digest and issue
+//! actions. Jobs that steps schedule (zero-retention deletion, alerts, issue deletion) run right after each step, like
+//! upstream's on-commit tasks in eager mode.
 //! Usage: DATABASE_URL=... cargo run -p bugsink-server --example replay < steps.jsonl
 //! Settings (quotas, alerts) come from the same environment variables as `bugsink` (and upstream).
 
 use std::io::BufRead;
 
 use bugsink_server::digest::{DigestError, DigestJob, digest};
+use bugsink_server::issues::{self, Action};
 use bugsink_server::{Settings, job_registry, tasks};
 use chrono::{DateTime, Utc};
 use clap::Parser;
@@ -29,6 +30,25 @@ async fn main() -> anyhow::Result<()> {
         let step: Value = serde_json::from_str(&line?)?;
         if let Some(sql) = step["sql"].as_str() {
             pool.execute(sqlx::AssertSqlSafe(sql.to_string())).await?;
+            continue;
+        }
+        if let Some(action) = step["action"].as_str() {
+            let action = Action::parse(action).unwrap();
+            let issue_ids: Vec<uuid::Uuid> =
+                sqlx::query_scalar(sqlx::AssertSqlSafe(step["issues"].as_str().unwrap().to_string()))
+                    .fetch_all(&pool)
+                    .await?;
+            let user_id = step["user_id"].as_i64().unwrap();
+            let now = step["now"].as_str().unwrap().parse::<DateTime<Utc>>()?;
+            if step["bulk"].as_bool().unwrap() {
+                let project_id = step["project_id"].as_i64().unwrap();
+                issues::apply_to_issues(&pool, &[project_id], &issue_ids, &action, user_id, now).await?;
+            } else {
+                for issue_id in issue_ids {
+                    issues::apply_to_issue(&pool, issue_id, &action, user_id, now).await?;
+                }
+            }
+            tasks::run_until_idle(&pool, &registry).await?;
             continue;
         }
         let job = DigestJob {

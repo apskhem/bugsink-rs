@@ -28,18 +28,21 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
 
 - `grouping.sh`: grouping keys, issue titles and denormalized fields for ~400 edge-case events, compared with
   upstream's own functions. Grouping keys must match byte-for-byte, or new events would open duplicate issues.
-- `digest.sh`: a scripted sequence of ~200 events plus user actions (resolve, resolve-by-next-release, resolve-in-release,
-  mute for a time and until a volume of events, grouping-mechanism upgrade, retention changes that force eviction incl.
-  of `never_evict` events and zero retention) digested four ways: upstream only, bugsink-rs only, bugsink-rs then upstream on the same database, and
+- `digest.sh`: a scripted sequence of ~200 events, interleaved with issue actions that each side applies with its own
+  code (resolve, also by next release and in a release; reopen; mute, also for a time and until a volume of events;
+  unmute; delete, incl. the background deletion of the issue's rows; on single issues and in bulk) and with settings
+  changes (grouping-mechanism upgrade, retention changes that force eviction incl. of `never_evict` events and zero
+  retention), digested four ways: upstream only, bugsink-rs only, bugsink-rs then upstream on the same database, and
   upstream then bugsink-rs. The four databases are compared row by row, and so is every alert sent along the way: emails
   (by the members' notification preferences) and messaging webhooks go to a capture server (`capture.py`) and must be
   identical. All of it is done once with default settings and once with tight quotas (`MAX_EVENTS_PER_*`,
   `MAX_EMAILS_PER_MONTH`). Telegram (whose API URL is fixed) is covered by unit tests against upstream's output instead.
-- `accounts.sh`: bugsink-rs creates a superuser and upstream checks it against its own `CREATE_SUPERUSER`; upstream
+- `ui_api.sh`: bugsink-rs creates a superuser and upstream checks it against its own `CREATE_SUPERUSER`; upstream
   sets up users and projects in every access situation, and bugsink-rs's UI API must allow exactly what upstream's
   views allow (project visibility, membership access, inactive users), with login, logout and CSRF checks. Passwords
   that bugsink-rs rehashes at login must still work upstream, and a password change upstream must end bugsink-rs's
-  sessions.
+  sessions. Then the issue list tabs, sorts and issue actions (single, project and global bulk) end to end, on events
+  sent to our own ingest.
 - `user_agents.sh`: the browser/OS/device contexts (and so tags) derived from a request's User-Agent header, for the
   ~30,000 user agents in uap-core's test suite plus malformed inputs, compared with upstream's own function. The
   parser data (`bugsink-server/src/digest/ua_regexes.json`) is exported from the upstream image.
@@ -49,25 +52,24 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
 Ported and verified: ingest (envelope/store, quotas and 429s) and digest (grouping, issues, releases, regressions,
 time- and volume-based unmute, tags incl. User-Agent-derived ones, hourly counts, eviction and retention), alerts by
 email and messaging services, login with upstream's users and passwords (sessions, CSRF, membership checks on the UI
-API), and the database bootstrap/version check. bugsink-rs can take over ingestion and digestion of an upstream
+API), issue actions (single and bulk, incl. deletion) and the issue lists' tabs, and the database bootstrap/version
+check. bugsink-rs can take over ingestion and digestion of an upstream
 installation today; viewing and managing issues still needs upstream's UI (not at the same time, see below).
 
 ### Not yet ported (upstream behaviour missing)
 
 In order of importance for production use (code-level gaps also have a `TODO(parity)` where they belong):
 
-1. **The UI's API.** `/api/v1` has login, logout and the current user; everything else is read-only (projects,
-   issues, events). Missing:
+1. **The UI's API.** `/api/v1` has login, logout and the current user; the project and global issue lists (tabs,
+   sorts) with issue actions; issues and events read-only otherwise. Missing:
    - accounts: signup, email confirmation, password reset, preferences, change password
-   - issue actions: resolve (also by next release / in a release), mute for/until, unmute, delete; bulk actions;
-     search (`q=`) and the open/resolved/muted/all tabs; tags, history (turning points, comments), groupings and
-     sparkline counts per issue
+   - issues: search (`q=`); tags, history (turning points, comments), groupings and sparkline counts per issue
    - projects, teams and memberships: create/edit/delete, invitations, roles, alert settings; messaging service
      setup and test messages; SDK setup pages
    - installation: users admin, auth tokens, settings and counts pages
 2. **Frontend**: not started (`frontend/` holds only the plan; framework not chosen).
-3. **Background jobs** besides digest, alerts and zero-retention deletion: deferred deletion of issues, projects and
-   events (`delete_*_deps`); tag vacuuming (`vacuum_tagvalues`, `vacuum_tagkeys`, `vacuum_eventless_issuetags`);
+3. **Background jobs** besides digest, alerts, zero-retention deletion and issue deletion: deferred deletion of
+   projects (`delete_project_deps`); tag vacuuming (`vacuum_tagvalues`, `vacuum_tagkeys`, `vacuum_eventless_issuetags`);
    invitation, signup confirmation, password reset and welcome emails; phone-home.
 4. **Upstream's REST API** (`/api/canonical/0/`, with auth tokens) for scripts and integrations.
 5. **Ingest extras**: minidumps, sourcemap and debug-file uploads (`chunk-upload`, `artifactbundle/assemble`,
@@ -98,6 +100,7 @@ bugsink-server/        the `bugsink` binary (src/main.rs: CLI, config, HTTP, in-
   src/quota.rs         installation/project quotas (counted in digest, enforced in both)
   src/alerts           alert emails (upstream's templates) and messaging services (Slack, Discord, ...), as jobs
   src/api.rs           /api/v1/... JSON API for the frontend, with upstream's access rules
+  src/issues           issue actions (resolve, mute, delete, ...; single and bulk) and deleting issues' rows
   src/accounts         users (upstream's auth_user, Django's password hashes), login sessions, CSRF
   examples/            parity drivers used by tools/parity/
 frontend/              CSR app (separate JS workspace), built into frontend/dist/; see frontend/README.md

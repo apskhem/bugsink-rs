@@ -31,7 +31,8 @@ each page needs; ✅ means it exists already.
 | SDK setup (Python, JS, PHP, Go) | `projects/project_sdk_setup*.html` | project DSN (from project) |
 | Alert/messaging setup | `projects/project_alerts_setup.html`, `project_messaging_service_{new,edit}.html` | `/projects/{id}/messaging-services` |
 | Team list / new / edit / members | `teams/*.html` | `/teams`, `/teams/{id}/members` |
-| **Issue list** (open/resolved/muted/all, search, bulk actions) | `issues/issue_list.html` | ✅ `GET /projects/{id}/issues` (filters + `q=` TODO), bulk `POST /issues/actions` |
+| **Issue list** (open/resolved/muted/all, search, bulk actions) | `issues/issue_list.html` | ✅ `GET /projects/{id}/issues?state=&sort=` (`q=` TODO), bulk ✅ `POST /projects/{id}/issues/actions` |
+| Global issue list | `issues/issue_list.html` | ✅ `GET /issues?state=&sort=`, bulk ✅ `POST /issues/actions` |
 | **Issue: event details** | `issues/event_details.html`, `_event_nav.html` | ✅ `GET /events/{id}`, nav: first/prev/next/last |
 | **Issue: stacktrace** | `issues/stacktrace.html`, `_stacktrace_frames.html` | ✅ `GET /events/{id}` (+ server-side sourcemaps, highlighted context TODO) |
 | Issue: breadcrumbs | `issues/breadcrumbs.html` | from event data |
@@ -39,12 +40,20 @@ each page needs; ✅ means it exists already.
 | Issue: tags | `issues/tags.html` | `GET /issues/{id}/tags` |
 | Issue: history (turning points, comments) | `issues/history.html` | `GET/POST /issues/{id}/history` |
 | Issue: grouping | `issues/grouping.html` | `GET /issues/{id}/groupings` |
-| Issue actions (resolve, resolve in release, mute for/until, unmute, delete) | buttons across `issues/base.html` | `POST /issues/{id}/actions` |
+| Issue actions (resolve, resolve in release, mute for/until, unmute, delete) | buttons across `issues/base.html` | ✅ `POST /issues/{id}/actions` |
 | Sparklines | `events/_event_sparkline*.html` | `GET /issues/{id}/counts?period=` |
 | Users admin | `users/user_{list,edit}.html` | `/users` |
 | Auth tokens | `bsmain/auth_token_{list,create}.html` | `/auth-tokens` |
 | Settings, counts | `templates/bugsink/{settings,counts}.html` | `/settings`, `/counts` |
 | Error pages | `templates/{400,403,404,500,503}.html` | n/a (client-side) |
+
+Issue actions take upstream's action strings as `{"action": ...}` (bulk: plus `"issue_ids": [...]`): `resolve`,
+`resolved_release:<version>`, `resolved_next`, `reopen`, `mute`, `mute_for:<period>,<n>,None`,
+`mute_until:<period>,<n>,<volume>`, `unmute`, `delete`. Upstream's menus offer `mute_for:` day/1, week/1, month/1,
+month/3 and `mute_until:` hour/1/5, hour/24/5, hour/24/100; "resolved in latest" is `resolved_release:` with the
+project's latest release. An action that doesn't fit the issue's state is not an error: a single action answers
+`applied: false`, a bulk action lists such issues in `unapplied_issue_ids`. List tabs (`state=`): `open` (default),
+`unresolved`, `resolved`, `muted`, `all`; `sort=`: `last_seen` (default) or `events`.
 
 Not ported: Django admin, `csrf_debug`, debug email previews. Email templates stay server-side (backend renders
 alert/invite emails).

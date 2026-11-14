@@ -13,11 +13,13 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use bugsink_db::PgPool;
 use bugsink_db::models::{Event, EventSummary, IssueSummary, Project};
+use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
 use crate::accounts::{self, CurrentUser, User};
+use crate::issues::{self, Action};
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -43,7 +45,11 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/me", get(accounts::me))
         .route("/api/v1/projects", get(list_projects))
         .route("/api/v1/projects/{project_id}/issues", get(list_issues))
+        .route("/api/v1/projects/{project_id}/issues/actions", post(project_issue_actions))
+        .route("/api/v1/issues", get(global_issue_list))
+        .route("/api/v1/issues/actions", post(global_issue_actions))
         .route("/api/v1/issues/{issue_id}", get(get_issue))
+        .route("/api/v1/issues/{issue_id}/actions", post(issue_action))
         .route("/api/v1/issues/{issue_id}/events", get(list_events))
         .route("/api/v1/events/{event_id}", get(get_event))
         .with_state(state)
@@ -53,7 +59,7 @@ pub enum ApiError {
     BadRequest(String),
     Unauthorized,
     CsrfFailed,
-    Forbidden,
+    Forbidden(String),
     NotFound,
     Db(sqlx::Error),
     Internal(String),
@@ -79,11 +85,7 @@ impl IntoResponse for ApiError {
                 (StatusCode::UNAUTHORIZED, Json(json!({ "detail": "authentication required" }))).into_response()
             }
             Self::CsrfFailed => (StatusCode::FORBIDDEN, Json(json!({ "detail": "CSRF check failed" }))).into_response(),
-            Self::Forbidden => (
-                StatusCode::FORBIDDEN,
-                Json(json!({ "detail": "You don't have permission to access this project" })),
-            )
-                .into_response(),
+            Self::Forbidden(detail) => (StatusCode::FORBIDDEN, Json(json!({ "detail": detail }))).into_response(),
             Self::NotFound => (StatusCode::NOT_FOUND, Json(json!({ "detail": "not found" }))).into_response(),
             Self::Db(e) => {
                 tracing::error!(error = %e, "api query failed");
@@ -138,7 +140,10 @@ async fn require_project_access(pool: &PgPool, user: &User, project_id: i64) -> 
     .bind(user.id)
     .fetch_one(pool)
     .await?;
-    if member { Ok(()) } else { Err(ApiError::Forbidden) }
+    if !member {
+        return Err(ApiError::Forbidden("You don't have permission to access this project".into()));
+    }
+    Ok(())
 }
 
 /// Upstream's `projects_visible_to_user`: superusers see all; others their projects (accepted or not), their teams'
@@ -170,31 +175,195 @@ async fn list_projects(
 const ISSUE_COLUMNS: &str = "id, project_id, digest_order, first_seen, last_seen, digested_event_count,
     stored_event_count, calculated_type, calculated_value, transaction, is_resolved, is_muted";
 
-async fn list_issues(
-    State(state): State<ApiState>,
-    CurrentUser { user, .. }: CurrentUser,
-    Path(project_id): Path<i64>,
-    Query(page): Query<Page>,
-) -> ApiResult<Paged<IssueSummary>> {
+/// The issue lists' tabs (`_filter_issue_list_by_state`) and sorts (`ISSUE_LIST_SORTS`, falling back to last seen).
+#[derive(Deserialize)]
+struct IssueListQuery {
+    #[serde(default = "default_state")]
+    state: String,
+    #[serde(default)]
+    sort: String,
+    #[serde(default)]
+    offset: i64,
+    limit: Option<i64>,
+}
+
+fn default_state() -> String {
+    "open".into()
+}
+
+impl IssueListQuery {
+    fn page(&self) -> Page {
+        Page { offset: self.offset, limit: self.limit }
+    }
+
+    fn state_sql(&self) -> Result<&'static str, ApiError> {
+        Ok(match self.state.as_str() {
+            "open" => "NOT is_resolved AND NOT is_muted",
+            "unresolved" => "NOT is_resolved",
+            "resolved" => "is_resolved AND NOT is_muted",
+            "muted" => "NOT is_resolved AND is_muted",
+            "all" => "true",
+            _ => {
+                return Err(ApiError::BadRequest("state must be one of open, unresolved, resolved, muted, all".into()));
+            }
+        })
+    }
+
+    fn order_sql(&self) -> &'static str {
+        // id last: a stable order for paging through ties
+        match self.sort.as_str() {
+            "events" => "digested_event_count DESC, last_seen DESC, id",
+            _ => "last_seen DESC, id",
+        }
+    }
+
+    async fn fetch(&self, pool: &PgPool, project_ids: &[i64]) -> ApiResult<Paged<IssueSummary>> {
+        let page = self.page();
+        let items = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+            "SELECT {ISSUE_COLUMNS} FROM issues_issue WHERE project_id = ANY($1) AND NOT is_deleted AND {}
+             ORDER BY {} OFFSET $2 LIMIT $3",
+            self.state_sql()?,
+            self.order_sql()
+        )))
+        .bind(project_ids)
+        .bind(page.offset)
+        .bind(page.limit())
+        .fetch_all(pool)
+        .await?;
+        Ok(Json(Paged { items, offset: page.offset, limit: page.limit() }))
+    }
+}
+
+/// `project_membership_required`: the project is looked up first (deleted or not), then access is checked.
+async fn accessible_project(pool: &PgPool, user: &User, project_id: i64) -> Result<(), ApiError> {
     let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM projects_project WHERE id = $1)")
         .bind(project_id)
-        .fetch_one(&state.pool)
+        .fetch_one(pool)
         .await?;
     if !exists {
         return Err(ApiError::NotFound);
     }
-    require_project_access(&state.pool, &user, project_id).await?;
-    // TODO(parity): open/resolved/muted/all tabs, tag search (`q=`), sort options.
-    let items = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {ISSUE_COLUMNS} FROM issues_issue WHERE project_id = $1 AND NOT is_deleted
-         ORDER BY last_seen DESC OFFSET $2 LIMIT $3"
+    require_project_access(pool, user, project_id).await
+}
+
+async fn list_issues(
+    State(state): State<ApiState>,
+    CurrentUser { user, .. }: CurrentUser,
+    Path(project_id): Path<i64>,
+    Query(query): Query<IssueListQuery>,
+) -> ApiResult<Paged<IssueSummary>> {
+    accessible_project(&state.pool, &user, project_id).await?;
+    // TODO(parity): tag search (`q=`), sparklines.
+    query.fetch(&state.pool, &[project_id]).await
+}
+
+/// `get_issue_accessible_project_ids`: the projects whose issues show up in the global issue list.
+async fn issue_accessible_project_ids(pool: &PgPool, user: &User) -> Result<Vec<i64>, ApiError> {
+    Ok(sqlx::query_scalar(
+        "SELECT p.id FROM projects_project p
+         WHERE NOT p.is_deleted
+           AND ($1 OR EXISTS (SELECT 1 FROM projects_projectmembership m
+                              WHERE m.project_id = p.id AND m.user_id = $2 AND m.accepted))",
+    )
+    .bind(user.is_superuser)
+    .bind(user.id)
+    .fetch_all(pool)
+    .await?)
+}
+
+async fn global_issue_list(
+    State(state): State<ApiState>,
+    CurrentUser { user, .. }: CurrentUser,
+    Query(query): Query<IssueListQuery>,
+) -> ApiResult<Paged<IssueSummary>> {
+    let project_ids = issue_accessible_project_ids(&state.pool, &user).await?;
+    query.fetch(&state.pool, &project_ids).await
+}
+
+#[derive(Deserialize)]
+struct ActionRequest {
+    /// Upstream's action strings: `resolve`, `resolved_release:<version>`, `resolved_next`, `reopen`, `mute`,
+    /// `mute_for:<period>,<n>,None`, `mute_until:<period>,<n>,<volume>`, `unmute`, `delete`.
+    action: String,
+}
+
+#[derive(Deserialize)]
+struct BulkActionRequest {
+    action: String,
+    issue_ids: Vec<Uuid>,
+}
+
+#[derive(Serialize)]
+struct ActionResult {
+    /// False when the action doesn't apply to the issue's current state (e.g. already resolved); nothing changed.
+    applied: bool,
+    /// The issue afterwards; absent once deleted.
+    issue: Option<IssueSummary>,
+}
+
+#[derive(Serialize)]
+struct BulkActionResult {
+    /// The selected issues the action did not apply to, because of their state.
+    unapplied_issue_ids: Vec<Uuid>,
+}
+
+fn parse_action(action: &str) -> Result<Action, ApiError> {
+    Action::parse(action).ok_or_else(|| ApiError::BadRequest(format!("unknown issue action {action:?}")))
+}
+
+/// An action from an issue's own page (upstream: a POST to any of its tabs).
+async fn issue_action(
+    State(state): State<ApiState>,
+    CurrentUser { user, .. }: CurrentUser,
+    Path(issue_id): Path<Uuid>,
+    Json(req): Json<ActionRequest>,
+) -> ApiResult<ActionResult> {
+    accessible_issue(&state.pool, &user, issue_id).await?;
+    let action = parse_action(&req.action)?;
+    let applied = issues::apply_to_issue(&state.pool, issue_id, &action, user.id, Utc::now())
+        .await
+        .map_err(ApiError::internal)?;
+    let issue = sqlx::query_as(sqlx::AssertSqlSafe(format!(
+        "SELECT {ISSUE_COLUMNS} FROM issues_issue WHERE id = $1 AND NOT is_deleted"
     )))
-    .bind(project_id)
-    .bind(page.offset)
-    .bind(page.limit())
-    .fetch_all(&state.pool)
+    .bind(issue_id)
+    .fetch_optional(&state.pool)
     .await?;
-    Ok(Json(Paged { items, offset: page.offset, limit: page.limit() }))
+    Ok(Json(ActionResult { applied, issue }))
+}
+
+/// A bulk action from a project's issue list.
+async fn project_issue_actions(
+    State(state): State<ApiState>,
+    CurrentUser { user, .. }: CurrentUser,
+    Path(project_id): Path<i64>,
+    Json(req): Json<BulkActionRequest>,
+) -> ApiResult<BulkActionResult> {
+    accessible_project(&state.pool, &user, project_id).await?;
+    let action = parse_action(&req.action)?;
+    let unapplied_issue_ids =
+        issues::apply_to_issues(&state.pool, &[project_id], &req.issue_ids, &action, user.id, Utc::now())
+            .await
+            .map_err(ApiError::internal)?;
+    Ok(Json(BulkActionResult { unapplied_issue_ids }))
+}
+
+/// A bulk action from the global issue list, over the issues of every project the user has issue access to.
+async fn global_issue_actions(
+    State(state): State<ApiState>,
+    CurrentUser { user, .. }: CurrentUser,
+    Json(req): Json<BulkActionRequest>,
+) -> ApiResult<BulkActionResult> {
+    let action = parse_action(&req.action)?;
+    if matches!(action, Action::ResolvedRelease(_) | Action::ResolvedNext) {
+        return Err(ApiError::Forbidden("Release-specific issue actions are project-scoped".into()));
+    }
+    let project_ids = issue_accessible_project_ids(&state.pool, &user).await?;
+    let unapplied_issue_ids =
+        issues::apply_to_issues(&state.pool, &project_ids, &req.issue_ids, &action, user.id, Utc::now())
+            .await
+            .map_err(ApiError::internal)?;
+    Ok(Json(BulkActionResult { unapplied_issue_ids }))
 }
 
 /// `issue_membership_required`: a deleted issue is a 404.

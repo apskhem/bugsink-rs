@@ -10,7 +10,7 @@ use chrono::{DateTime, Months, TimeDelta, TimeZone, Utc};
 use uuid::Uuid;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum Period {
+pub enum Period {
     Year,
     Month,
     Week,
@@ -56,7 +56,7 @@ impl Period {
     }
 
     /// `add_periods_to_datetime`; for `Total`, upstream's "never" (9999-12-31 23:59).
-    fn add(self, dt: DateTime<Utc>, n: u32) -> DateTime<Utc> {
+    pub fn add(self, dt: DateTime<Utc>, n: u32) -> DateTime<Utc> {
         let n64 = i64::from(n);
         match self {
             Self::Year => dt.checked_add_months(Months::new(12 * n)).expect("date in range"),

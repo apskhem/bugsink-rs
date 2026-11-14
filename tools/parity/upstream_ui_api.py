@@ -1,4 +1,4 @@
-# Runs inside upstream's `bugsink-manage shell` for accounts.sh; STEP selects what to do.
+# Runs inside upstream's `bugsink-manage shell` for ui_api.sh; STEP selects what to do.
 #   setup:  check the superuser bugsink-rs created (row and password), create users and projects in every access
 #           situation, and print what upstream allows each user (a line starting with EXPECT, JSON).
 #   verify: check the password bugsink-rs rehashed at login still works upstream, then change it (which must end the
@@ -62,6 +62,7 @@ if step == "setup":
             "visible": sorted(p.name for p in projects_visible_to_user(Project.objects.all(), user)),
             "access": {p.name: (p.id, user_has_project_membership_access(user, p)) for p in projects.values()},
         }
+    expect = {"users": expect, "sentry_keys": {name: p.sentry_key.hex for name, p in projects.items()}}
     print("EXPECT " + json.dumps(expect))
 
 elif step == "verify":
