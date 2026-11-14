@@ -1,6 +1,6 @@
 """Generates tools/parity/digest-steps.jsonl: a deterministic sequence of events to digest, interleaved with issue
-actions (resolve, reopen, mute, unmute, delete; on one issue or in bulk, each side with its own code) and SQL changes
-(grouping-mechanism upgrade, retention changes) applied identically to upstream and to us.
+actions (resolve, reopen, mute, unmute, delete; on one issue or in bulk, each side with its own code), vacuuming (each
+side's own) and SQL changes (grouping-mechanism upgrade, retention changes) applied identically to upstream and to us.
 Also sets up alert recipients and messaging services."""
 import json
 import random
@@ -168,6 +168,8 @@ event_ids = []
 for i in range(200):
     if i in sql_actions:
         steps.append({"sql": sql_actions[i]})
+    if i == 160:  # after project 1's eviction: issue tags without events, values without users
+        steps.append({"vacuum": True})
     if i in actions:
         steps.append(actions[i](i))
 
@@ -222,6 +224,8 @@ for i in range(200):
     steps.append({"n": i, "project_id": project_id, "event_id": event_id, "ingested_at": at(i),
                   "digested_at": (T0 + timedelta(minutes=7 * i, seconds=2)).isoformat(),
                   "remote_addr": "203.0.113.5", "event": event})
+
+steps.append({"vacuum": True})  # after project 2's zero retention took all its events
 
 with open("tools/parity/digest-steps.jsonl", "w") as f:
     for s in steps:

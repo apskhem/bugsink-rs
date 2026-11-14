@@ -37,6 +37,31 @@ pub(crate) async fn enqueue<'e>(executor: impl PgExecutor<'e>, project_id: i64, 
 
 pub async fn handle_job(pool: PgPool, payload: Value) -> anyhow::Result<()> {
     let job: DeleteIssueDepsJob = serde_json::from_value(payload)?;
+    if delete_batch(&pool, job.project_id, job.issue_id).await? {
+        enqueue(&pool, job.project_id, job.issue_id).await?;
+    }
+    Ok(())
+}
+
+/// `delete_marked_issues_sync`: finishes deleting every issue marked as deleted, in this process (`bugsink vacuum`).
+pub async fn delete_marked_issues(pool: &PgPool) -> anyhow::Result<()> {
+    loop {
+        let marked: Vec<(Uuid, i64)> =
+            sqlx::query_as("SELECT id, project_id FROM issues_issue WHERE is_deleted ORDER BY id LIMIT 250")
+                .fetch_all(pool)
+                .await?;
+        if marked.is_empty() {
+            return Ok(());
+        }
+        for (issue_id, project_id) in marked {
+            while delete_batch(pool, project_id, issue_id).await? {}
+        }
+    }
+}
+
+/// `delete_issue_deps_batch`: true when the budget ran out and another batch is needed.
+async fn delete_batch(pool: &PgPool, project_id: i64, issue_id: Uuid) -> anyhow::Result<bool> {
+    let job = DeleteIssueDepsJob { project_id, issue_id };
     let mut tx = pool.begin().await?;
     // digest's lock: events_event deletions change the project's stored_event_count
     sqlx::query("SELECT id FROM projects_project WHERE id = $1 FOR UPDATE")
@@ -69,16 +94,9 @@ pub async fn handle_job(pool: PgPool, payload: Value) -> anyhow::Result<()> {
                 .await?;
         }
         if table == "tags_issuetag" {
-            // `prune_orphans` -> `prune_tagvalues`: values no issue tag uses anymore (an event tag implies an issue
-            // tag; tag keys are left to vacuuming)
+            // `prune_orphans`
             let value_ids: Vec<i64> = value_ids.into_iter().flatten().collect();
-            sqlx::query(
-                "DELETE FROM tags_tagvalue v WHERE v.id = ANY($1)
-                   AND NOT EXISTS (SELECT 1 FROM tags_issuetag WHERE value_id = v.id)",
-            )
-            .bind(&value_ids)
-            .execute(&mut *tx)
-            .await?;
+            crate::vacuum::prune_tagvalues(&mut tx, &value_ids).await?;
         }
         num_deleted += deleted;
         if num_deleted >= BATCH_SIZE {
@@ -86,11 +104,10 @@ pub async fn handle_job(pool: PgPool, payload: Value) -> anyhow::Result<()> {
         }
     }
 
-    if num_deleted >= BATCH_SIZE {
-        enqueue(&mut *tx, job.project_id, job.issue_id).await?;
-    } else {
+    let more = num_deleted >= BATCH_SIZE;
+    if !more {
         sqlx::query("DELETE FROM issues_issue WHERE id = $1").bind(job.issue_id).execute(&mut *tx).await?;
     }
     tx.commit().await?;
-    Ok(())
+    Ok(more)
 }

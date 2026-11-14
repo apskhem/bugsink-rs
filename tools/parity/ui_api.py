@@ -113,9 +113,15 @@ if phase == "before":
     # Issues, from events sent to our own ingest: "b" twice, so it sorts first by event count.
     mine = expect["member@example.org"]["access"]["Mine"][0]
     auth = ("X-Sentry-Auth", f"Sentry sentry_version=7, sentry_key={sentry_keys['Mine']}")
+    # ui_api.sh runs the server behind one proxy that sets X-Forwarded-For; only "a" says where it came from.
+    status, _, _ = call("POST", f"/api/{mine}/store/", {"message": "spoofed"},
+                        headers=[auth, ("X-Forwarded-For", "6.6.6.6, 198.51.100.7")])
+    check("ingest with a spoofed X-Forwarded-For: 400", status == 400, status)
     for message, tags in [("a", {}), ("b", {"region": "eu"}), ("b", {"region": "us"}), ("c", {"region": "eu"})]:
+        forwarded = [("X-Forwarded-For", "198.51.100.7")] if message == "a" else []
         status, body, _ = call("POST", f"/api/{mine}/store/",
-                               {"event_id": uuid.uuid4().hex, "message": message, "tags": tags}, headers=[auth])
+                               {"event_id": uuid.uuid4().hex, "message": message, "tags": tags},
+                               headers=[auth] + forwarded)
         check(f"ingest {message!r}", status == 200, (status, body))
     cookie, csrf = member
 

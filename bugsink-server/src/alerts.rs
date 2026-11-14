@@ -53,7 +53,7 @@ impl AlertSettings {
 }
 
 /// Upstream's boolean environment variables: only "true", "1" and "yes" (any case) are true.
-fn py_bool(s: &str) -> Result<bool, String> {
+pub(crate) fn py_bool(s: &str) -> Result<bool, String> {
     Ok(["true", "1", "yes"].contains(&s.to_lowercase().as_str()))
 }
 

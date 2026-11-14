@@ -1,6 +1,6 @@
-//! Replays digest steps (JSONL on stdin, see tools/parity/make_digest_steps.py) through this crate's digest and issue
-//! actions. Jobs that steps schedule (zero-retention deletion, alerts, issue deletion) run right after each step, like
-//! upstream's on-commit tasks in eager mode.
+//! Replays digest steps (JSONL on stdin, see tools/parity/make_digest_steps.py) through this crate's digest, issue
+//! actions and vacuuming. Jobs that steps schedule (zero-retention deletion, alerts, issue deletion) run right after
+//! each step, like upstream's on-commit tasks in eager mode.
 //! Usage: DATABASE_URL=... cargo run -p bugsink-server --example replay < steps.jsonl
 //! Settings (quotas, alerts) come from the same environment variables as `bugsink` (and upstream).
 
@@ -8,7 +8,7 @@ use std::io::BufRead;
 
 use bugsink_server::digest::{DigestError, DigestJob, digest};
 use bugsink_server::issues::{self, Action};
-use bugsink_server::{Settings, job_registry, tasks};
+use bugsink_server::{Settings, job_registry, tasks, vacuum};
 use chrono::{DateTime, Utc};
 use clap::Parser;
 use serde_json::Value;
@@ -30,6 +30,11 @@ async fn main() -> anyhow::Result<()> {
         let step: Value = serde_json::from_str(&line?)?;
         if let Some(sql) = step["sql"].as_str() {
             pool.execute(sqlx::AssertSqlSafe(sql.to_string())).await?;
+            continue;
+        }
+        if step["vacuum"].as_bool() == Some(true) {
+            let all = vacuum::What { eventless_issuetags: true, tags: true, deleted_issues: true };
+            vacuum::run(&pool, all).await?;
             continue;
         }
         if let Some(action) = step["action"].as_str() {

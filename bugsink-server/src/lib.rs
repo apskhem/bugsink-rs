@@ -10,9 +10,11 @@ pub mod grouping;
 pub mod ingest;
 pub mod issues;
 pub mod protocol;
+pub mod proxy;
 pub mod quota;
 pub mod search;
 pub mod tasks;
+pub mod vacuum;
 
 use std::sync::Arc;
 
@@ -23,6 +25,8 @@ pub struct Settings {
     pub quotas: quota::QuotaSettings,
     #[command(flatten)]
     pub alerts: alerts::AlertSettings,
+    #[command(flatten)]
+    pub proxy: proxy::ProxySettings,
 }
 
 /// Every background job kind and its handler.

@@ -1,5 +1,5 @@
 # Runs inside the official Bugsink image (`bugsink-manage shell`): replays digest steps (JSONL on stdin) through
-# upstream's own digest_event, and issue actions the way upstream's views apply them.
+# upstream's own digest_event, issue actions the way upstream's views apply them, and vacuuming.
 import json
 import sys
 from datetime import datetime
@@ -12,6 +12,8 @@ from ingest.tasks import digest_event
 from issues.models import (
     Issue, IssueQuerysetStateManager, IssueStateManager, apply_issue_action, is_valid_issue_action,
     q_for_invalid_issue_action)
+from issues.tasks import delete_marked_issues_sync
+from tags.tasks import vacuum_eventless_issuetags_sync, vacuum_tags_sync
 from users.models import User
 from snappea.settings import get_settings as get_snappea_settings
 
@@ -23,6 +25,11 @@ for line in sys.stdin:
     if "sql" in step:
         with connection.cursor() as cursor:
             cursor.execute(step["sql"])
+        continue
+    if "vacuum" in step:  # `bugsink-manage vacuum --deleted-issues --eventless-issuetags --tags`, in its order
+        delete_marked_issues_sync()
+        vacuum_eventless_issuetags_sync()
+        vacuum_tags_sync()
         continue
     if "action" in step:
         with connection.cursor() as cursor:

@@ -6,8 +6,10 @@
 //!
 //! While the installation's or the project's quota is exceeded (see `crate::quota`), requests get an empty 429.
 //!
-//! TODO(parity): `/minidump/` and `/security/` (CSP reports) endpoints; `X-Real-IP`/`X-Forwarded-For` behind a proxy;
-//! a short-lived cache of project keys.
+//! The client's address (for `remote_addr` and `{{auto}}` user IPs) is the peer's, or behind a proxy taken from a
+//! header (`crate::proxy`).
+//!
+//! TODO(parity): `/minidump/` and `/security/` (CSP reports) endpoints; a short-lived cache of project keys.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -21,6 +23,7 @@ use axum::{Json, Router};
 use bugsink_db::PgPool;
 use crate::digest::DigestJob;
 use crate::protocol::{auth, encoding, envelope};
+use crate::proxy::{ClientAddr, SpoofedForwardedFor};
 use crate::quota::{self, QuotaSettings, Scope};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
@@ -33,19 +36,20 @@ struct IngestState {
     pool: PgPool,
     max_body_bytes: usize,
     quotas: QuotaSettings,
+    client_addr: ClientAddr,
 }
 
 const SENTRY_RATE_LIMITS: HeaderName = HeaderName::from_static("x-sentry-rate-limits");
 
 /// Routes for the Sentry ingest API. `max_body_bytes` applies to both the compressed and the decompressed body.
-pub fn router(pool: PgPool, max_body_bytes: usize, quotas: QuotaSettings) -> Router {
+pub fn router(pool: PgPool, max_body_bytes: usize, quotas: QuotaSettings, client_addr: ClientAddr) -> Router {
     Router::new()
         .route("/api/{project_id}/envelope/", post(envelope_endpoint).layer(map_response(sentry_rate_limits)))
         .route("/api/{project_id}/store/", post(store_endpoint))
         // Browser SDKs post cross-origin. Auth is the DSN key, not cookies, so a permissive policy is correct.
         .layer(CorsLayer::very_permissive().expose_headers([SENTRY_RATE_LIMITS]))
         .layer(DefaultBodyLimit::max(max_body_bytes))
-        .with_state(IngestState { pool, max_body_bytes, quotas })
+        .with_state(IngestState { pool, max_body_bytes, quotas, client_addr })
 }
 
 /// Like upstream, every envelope response tells SDKs not to send transactions and spans (unsupported); a 429 also
@@ -76,6 +80,8 @@ enum IngestError {
     Envelope(#[from] envelope::EnvelopeError),
     #[error("invalid event JSON: {0}")]
     EventJson(#[from] serde_json::Error),
+    #[error(transparent)]
+    SpoofedForwardedFor(#[from] SpoofedForwardedFor),
     #[error("internal error")]
     Internal(#[from] anyhow::Error),
 }
@@ -95,6 +101,7 @@ impl IntoResponse for IngestError {
             Self::MissingKey | Self::Forbidden => StatusCode::FORBIDDEN,
             Self::Decode(encoding::DecodeError::TooLarge(_)) => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Decode(_) | Self::Envelope(_) | Self::EventJson(_) | Self::Parse(_) => StatusCode::BAD_REQUEST,
+            Self::SpoofedForwardedFor(_) => StatusCode::BAD_REQUEST,
             Self::OverQuota => StatusCode::TOO_MANY_REQUESTS,
             Self::Internal(e) => {
                 tracing::error!(error = %e, "ingest failed");
@@ -109,7 +116,7 @@ struct Request {
     ingested_at: DateTime<Utc>,
     project_id: i64,
     key_from_request: Option<Uuid>,
-    remote_addr: String,
+    remote_addr: Option<String>,
     body: Vec<u8>,
 }
 
@@ -129,12 +136,11 @@ impl Request {
                 .find_map(auth::key_from_auth_header)
         });
         let content_encoding = headers.get(header::CONTENT_ENCODING).and_then(|v| v.to_str().ok());
-        // TODO: honour X-Forwarded-For when configured to run behind a trusted proxy.
         Ok(Self {
             ingested_at: Utc::now(),
             project_id,
             key_from_request,
-            remote_addr: peer.ip().to_string(),
+            remote_addr: state.client_addr.of(headers, peer)?,
             body: encoding::decode(body, content_encoding, state.max_body_bytes)?,
         })
     }
@@ -171,7 +177,7 @@ impl Request {
             project_id: self.project_id,
             event_id,
             ingested_at: self.ingested_at,
-            remote_addr: Some(self.remote_addr.clone()),
+            remote_addr: self.remote_addr.clone(),
             event,
         };
         crate::tasks::enqueue(pool, crate::digest::JOB_KIND, &job).await?;

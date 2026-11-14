@@ -30,8 +30,8 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
   upstream's own functions. Grouping keys must match byte-for-byte, or new events would open duplicate issues.
 - `digest.sh`: a scripted sequence of ~200 events, interleaved with issue actions that each side applies with its own
   code (resolve, also by next release and in a release; reopen; mute, also for a time and until a volume of events;
-  unmute; delete, incl. the background deletion of the issue's rows; on single issues and in bulk) and with settings
-  changes (grouping-mechanism upgrade, retention changes that force eviction incl. of `never_evict` events and zero
+  unmute; delete, incl. the background deletion of the issue's rows; on single issues and in bulk), with vacuuming
+  (`vacuum`: deleted issues, eventless issue tags, unused tag values and keys) and with settings changes (grouping-mechanism upgrade, retention changes that force eviction incl. of `never_evict` events and zero
   retention), digested four ways: upstream only, bugsink-rs only, bugsink-rs then upstream on the same database, and
   upstream then bugsink-rs. The four databases are compared row by row, and so is every alert sent along the way: emails
   (by the members' notification preferences) and messaging webhooks go to a capture server (`capture.py`) and must be
@@ -41,8 +41,9 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
   sets up users and projects in every access situation, and bugsink-rs's UI API must allow exactly what upstream's
   views allow (project visibility, membership access, inactive users), with login, logout and CSRF checks. Passwords
   that bugsink-rs rehashes at login must still work upstream, and a password change upstream must end bugsink-rs's
-  sessions. Then the issue list tabs, sorts and issue actions (single, project and global bulk) end to end, on events
-  sent to our own ingest.
+  sessions. Then the issue list tabs, sorts, search and issue actions (single, project and global bulk) end to end,
+  on events sent to our own ingest running behind a (simulated) proxy: the client address comes from
+  `X-Forwarded-For`, and a header with more addresses than proxies gets a 400.
 - `search.sh`: issue and event search (`q=`). The digest steps are replayed into a database for realistic tags; upstream
   builds ~1,200 queries from them (tag terms quoted every way, tag pairs, tags plus text, LIKE wildcards, parser edge
   cases incl. unclosed quotes, escapes and Unicode whitespace) and its `parse_query`, `search_issues` and
@@ -74,16 +75,16 @@ In order of importance for production use (code-level gaps also have a `TODO(par
    - installation: users admin, auth tokens, settings and counts pages
 2. **Frontend**: not started (`frontend/` holds only the plan; framework not chosen).
 3. **Background jobs** besides digest, alerts, zero-retention deletion and issue deletion: deferred deletion of
-   projects (`delete_project_deps`); tag vacuuming (`vacuum_tagvalues`, `vacuum_tagkeys`, `vacuum_eventless_issuetags`);
-   invitation, signup confirmation, password reset and welcome emails; phone-home.
+   projects (`delete_project_deps`); invitation, signup confirmation, password reset and welcome emails; phone-home.
 4. **Upstream's REST API** (`/api/canonical/0/`, with auth tokens) for scripts and integrations.
 5. **Ingest extras**: minidumps, sourcemap and debug-file uploads (`chunk-upload`, `artifactbundle/assemble`,
    `difs/assemble`) and applying them to stack traces, CSP reports (`/security/`), `VALIDATE_ON_DIGEST`, file-based
-   event storage (eviction deletes such events' rows but not their files), `X-Forwarded-For` behind a proxy.
+   event storage (eviction deletes such events' rows but not their files).
 6. **Settings**: `MAX_RETENTION_PER_PROJECT_EVENT_COUNT`, `TIME_ZONE` (dates in alerts are UTC).
-7. **Operations**: upstream's `/health/ready` (we have `/api/v1/health`) and its management commands for cleanup and
-   maintenance (`vacuum*`, `delete_old_events`, `cleanup_*`, `make_consistent`, `create_auth_token`, ...); we have
-   `migrate`, `create-project`, `serve` and `worker`.
+7. **Operations**: upstream's `/health/ready` (we have `/api/v1/health`) and its other management commands
+   (`vacuum`'s files, old-events, ingest-dir and orphaned-issues parts, `delete_old_events`, `cleanup_*`,
+   `make_consistent`, `create_auth_token`, ...); we have `migrate`, `create-project`, `create-superuser`, `vacuum`
+   (deleted issues, eventless issue tags, tags), `serve` and `worker`.
 
 Known deliberate differences: an envelope whose event payload is not valid JSON gets a 400 at ingest (upstream returns
 200 and drops the event during digest). A search of only whitespace (or only terms the parser skips) matches
@@ -108,6 +109,8 @@ bugsink-server/        the `bugsink` binary (src/main.rs: CLI, config, HTTP, in-
   src/api.rs           /api/v1/... JSON API for the frontend, with upstream's access rules
   src/issues           issue actions (resolve, mute, delete, ...; single and bulk) and deleting issues' rows
   src/search.rs        issue and event search: query parser, tag and text matching
+  src/proxy.rs         the client's address behind a reverse proxy (X-Real-IP / X-Forwarded-For)
+  src/vacuum.rs        `bugsink vacuum`: cleanup of eventless issue tags, unused tags, deleted issues
   src/accounts         users (upstream's auth_user, Django's password hashes), login sessions, CSRF
   examples/            parity drivers used by tools/parity/
 frontend/              CSR app (separate JS workspace), built into frontend/dist/; see frontend/README.md
@@ -141,6 +144,13 @@ Alerts too: `BASE_URL` (for links), `SITE_TITLE`; email via `EMAIL_HOST`, `EMAIL
 `ALERTS_WEBHOOK_DENY_NON_GLOBAL`. `bugsink --help` lists them all. Give `serve` and `worker` the same values.
 
 Don't run upstream and bugsink-rs against the same database at the same time: each assumes it is the only digester.
+
+Behind a reverse proxy, set upstream's `BEHIND_HTTPS_PROXY` (or `BEHIND_PLAIN_HTTP_PROXY`): the client's address is
+then taken from `X-Real-IP`, or with `USE_X_REAL_IP=false USE_X_FORWARDED_FOR=true X_FORWARDED_FOR_PROXY_COUNT=<n>`
+from `X-Forwarded-For` (exactly n addresses expected). Without it every event gets the proxy's address.
+
+Run `bugsink vacuum` regularly (e.g. daily from cron, like upstream's `bugsink-manage vacuum`): evicted events leave
+issue tags and tag values behind, which only it cleans up.
 
 `serve` binds to localhost by default; set `BUGSINK_BIND=0.0.0.0:8000` to expose it. `BASE_URL` also decides the UI
 API's CSRF origin check (requests from another origin are refused) and, when it is https, makes the session cookie

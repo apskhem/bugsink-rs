@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use axum::Router;
 use bugsink_db::PgPool;
-use bugsink_server::{Settings, accounts, api, grouping, ingest, job_registry, tasks};
+use bugsink_server::{Settings, accounts, api, grouping, ingest, job_registry, tasks, vacuum};
 use clap::{Args, Parser, Subcommand};
 use tokio::sync::watch;
 use tower_http::services::{ServeDir, ServeFile};
@@ -46,6 +46,19 @@ enum Command {
     Migrate,
     /// Create a project and print its DSN. Stopgap until the UI can do it.
     CreateProject { name: String },
+    /// Clean up stale rows, as upstream's `vacuum` command; with no flags, all of the below. Nothing runs this
+    /// automatically (upstream neither): schedule it, e.g. daily.
+    Vacuum {
+        /// Issue tags whose value none of the issue's (remaining) events has.
+        #[arg(long)]
+        eventless_issuetags: bool,
+        /// Tag values and keys nothing uses.
+        #[arg(long)]
+        tags: bool,
+        /// Finish deleting issues marked as deleted.
+        #[arg(long)]
+        deleted_issues: bool,
+    },
     /// Create a superuser that logs in with this email address as username (upstream's `CREATE_SUPERUSER`). Reads
     /// the password from the first line of stdin.
     CreateSuperuser { email: String },
@@ -100,10 +113,22 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::CreateProject { name } => create_project(&pool, &name, cli.settings.alerts.base_url()).await,
         Command::CreateSuperuser { email } => create_superuser(&pool, &email).await,
+        Command::Vacuum { eventless_issuetags, tags, deleted_issues } => {
+            let all = !(eventless_issuetags || tags || deleted_issues);
+            let what = vacuum::What {
+                eventless_issuetags: all || eventless_issuetags,
+                tags: all || tags,
+                deleted_issues: all || deleted_issues,
+            };
+            vacuum::run(&pool, what).await?;
+            println!("Vacuum complete.");
+            Ok(())
+        }
     }
 }
 
 async fn serve(pool: PgPool, args: ServeArgs, settings: Settings) -> anyhow::Result<()> {
+    let client_addr = settings.proxy.client_addr()?;
     let index = args.static_dir.join("index.html");
     if !index.exists() {
         tracing::warn!(path = %index.display(), "frontend not built; only the API will be useful");
@@ -111,7 +136,7 @@ async fn serve(pool: PgPool, args: ServeArgs, settings: Settings) -> anyhow::Res
     let frontend = ServeDir::new(&args.static_dir).fallback(ServeFile::new(index));
 
     let app = Router::new()
-        .merge(ingest::router(pool.clone(), args.max_body_bytes, settings.quotas))
+        .merge(ingest::router(pool.clone(), args.max_body_bytes, settings.quotas, client_addr))
         .merge(api::router(api::ApiState::new(pool.clone(), settings.alerts.base_url())?))
         .fallback_service(frontend)
         .layer(TraceLayer::new_for_http());
