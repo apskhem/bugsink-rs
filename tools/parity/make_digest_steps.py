@@ -79,6 +79,8 @@ for uid, (address, active, pref, pm, tm, _) in enumerate(USERS, start=1):
                              f"VALUES ({uid}, {sql_bool(tm[1])}, 0, {sql_bool(tm[0])}, '{TEAM}', {uid})"})
 steps.append({"sql": "INSERT INTO projects_projectmembership (id, send_email_alerts, role, accepted, project_id, "
                      "user_id) VALUES (100, NULL, 0, true, 1, 1)"})
+# a full name (for the history's display names; surrounding spaces are stripped)
+steps.append({"sql": "UPDATE auth_user SET first_name = ' Ada', last_name = 'Lovelace ' WHERE id = 5"})
 
 # Messaging services; the harness replaces @CAPTURE_HTTP@ with the capture server's address as each side sees it.
 SERVICES = [

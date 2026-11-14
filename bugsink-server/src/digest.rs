@@ -12,7 +12,7 @@
 //! - minidumps, `VALIDATE_ON_DIGEST`, file-based event storage
 
 mod counts;
-mod releases;
+pub(crate) mod releases;
 pub mod retention;
 mod tags;
 mod user_agent;

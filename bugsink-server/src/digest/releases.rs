@@ -48,12 +48,12 @@ fn cmp_releases(a: &Release, b: &Release) -> Ordering {
     })
 }
 
-async fn ordered_releases(tx: &mut Transaction<'_, Postgres>, project_id: i64) -> sqlx::Result<Vec<Release>> {
+async fn ordered_releases<'e>(executor: impl sqlx::PgExecutor<'e>, project_id: i64) -> sqlx::Result<Vec<Release>> {
     let mut releases: Vec<Release> = sqlx::query(
         "SELECT id, version, date_released, semver, is_semver, sort_epoch FROM releases_release WHERE project_id = $1",
     )
     .bind(project_id)
-    .fetch_all(&mut **tx)
+    .fetch_all(executor)
     .await?
     .iter()
     .map(|r| Release {
@@ -67,6 +67,11 @@ async fn ordered_releases(tx: &mut Transaction<'_, Postgres>, project_id: i64) -
     .collect();
     releases.sort_by(cmp_releases);
     Ok(releases)
+}
+
+/// `Project.get_latest_release().version` (None before the project's first event).
+pub(crate) async fn latest_release_version(pool: &bugsink_db::PgPool, project_id: i64) -> sqlx::Result<Option<String>> {
+    Ok(ordered_releases(pool, project_id).await?.pop().map(|r| r.version))
 }
 
 /// `create_release_if_needed`; returns the (sanitized) version.
@@ -127,7 +132,7 @@ pub(crate) async fn create_release_if_needed(
             .await?;
     }
 
-    let latest = ordered_releases(tx, project.id).await?.pop().map(|r| r.id);
+    let latest = ordered_releases(&mut **tx, project.id).await?.pop().map(|r| r.id);
     if latest == Some(release_id) {
         // Issues "resolved by next release" are now resolved in this one.
         let metadata = json_dumps(&json!({"actual_release": version}));
@@ -178,7 +183,7 @@ pub(crate) async fn issue_is_regression(
     if issue.is_resolved_unconditionally || !project.has_releases {
         return Ok(true);
     }
-    let sorted = ordered_releases(tx, project.id).await?;
+    let sorted = ordered_releases(&mut **tx, project.id).await?;
     let fixed_at = parse_lines(&issue.fixed_at);
     let events_at = parse_lines(&issue.events_at);
 

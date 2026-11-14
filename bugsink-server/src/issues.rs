@@ -9,6 +9,7 @@
 //! unmuting then see what upstream would have left behind).
 
 pub mod deletion;
+pub mod pages;
 
 use bugsink_db::{PgPool, Postgres, Transaction, TurningPointKind};
 use chrono::{DateTime, SubsecRound, Utc};

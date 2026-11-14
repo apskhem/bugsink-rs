@@ -19,7 +19,10 @@ use serde_json::json;
 use sqlx::QueryBuilder;
 use uuid::Uuid;
 
+mod issue_pages;
+
 use crate::accounts::{self, CurrentUser, User};
+use crate::issues::pages;
 use crate::issues::{self, Action};
 use crate::search::{Search, Searched};
 
@@ -50,10 +53,10 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/projects/{project_id}/issues/actions", post(project_issue_actions))
         .route("/api/v1/issues", get(global_issue_list))
         .route("/api/v1/issues/actions", post(global_issue_actions))
-        .route("/api/v1/issues/{issue_id}", get(get_issue))
         .route("/api/v1/issues/{issue_id}/actions", post(issue_action))
         .route("/api/v1/issues/{issue_id}/events", get(list_events))
         .route("/api/v1/events/{event_id}", get(get_event))
+        .merge(issue_pages::routes())
         .with_state(state)
 }
 
@@ -101,7 +104,7 @@ impl IntoResponse for ApiError {
     }
 }
 
-type ApiResult<T> = Result<Json<T>, ApiError>;
+pub(crate) type ApiResult<T> = Result<Json<T>, ApiError>;
 
 /// Keyset-free offset pagination for now; issue lists are short-lived views, not exports.
 #[derive(Deserialize)]
@@ -153,9 +156,9 @@ async fn require_project_access(pool: &PgPool, user: &User, project_id: i64) -> 
 async fn list_projects(
     State(state): State<ApiState>,
     CurrentUser { user, .. }: CurrentUser,
-) -> ApiResult<Vec<Project>> {
+) -> ApiResult<Vec<ProjectListItem>> {
     // TODO(parity): upstream's mine/teams/other tabs, member counts, join/leave.
-    let projects = sqlx::query_as(
+    let projects: Vec<Project> = sqlx::query_as(
         "SELECT id, team_id, name, slug, sentry_key, digested_event_count, stored_event_count, issue_count,
                 has_releases, retention_max_event_count
          FROM projects_project p
@@ -171,7 +174,21 @@ async fn list_projects(
     .bind(user.id)
     .fetch_all(&state.pool)
     .await?;
-    Ok(Json(projects))
+    let ids: Vec<i64> = projects.iter().map(|p| p.id).collect();
+    let mut sparklines = pages::project_list_sparklines(&state.pool, &ids, Utc::now()).await?;
+    let items = projects
+        .into_iter()
+        .map(|project| ProjectListItem { sparkline: sparklines.remove(&project.id).unwrap_or_default(), project })
+        .collect();
+    Ok(Json(items))
+}
+
+#[derive(Serialize)]
+struct ProjectListItem {
+    #[serde(flatten)]
+    project: Project,
+    /// Events in each of the last 24 hours, the current one last.
+    sparkline: Vec<i32>,
 }
 
 const ISSUE_COLUMNS: &str = "id, project_id, digest_order, first_seen, last_seen, digested_event_count,
@@ -222,7 +239,7 @@ impl IssueListQuery {
         }
     }
 
-    async fn fetch(&self, pool: &PgPool, project_ids: &[i64], search: &Search) -> ApiResult<Paged<IssueSummary>> {
+    async fn fetch(&self, pool: &PgPool, project_ids: &[i64], search: &Search) -> ApiResult<Paged<IssueListItem>> {
         let page = self.page();
         let mut qb = QueryBuilder::new(format!("SELECT {ISSUE_COLUMNS} FROM issues_issue WHERE project_id = ANY("));
         qb.push_bind(project_ids.to_vec());
@@ -232,9 +249,23 @@ impl IssueListQuery {
         qb.push_bind(page.offset);
         qb.push(" LIMIT ");
         qb.push_bind(page.limit());
-        let items = qb.build_query_as().fetch_all(pool).await?;
+        let issues: Vec<IssueSummary> = qb.build_query_as().fetch_all(pool).await?;
+        let ids: Vec<Uuid> = issues.iter().map(|i| i.id).collect();
+        let mut sparklines = pages::issue_list_sparklines(pool, &ids, Utc::now()).await?;
+        let items = issues
+            .into_iter()
+            .map(|issue| IssueListItem { sparkline: sparklines.remove(&issue.id).unwrap_or_default(), issue })
+            .collect();
         Ok(Json(Paged { items, offset: page.offset, limit: page.limit() }))
     }
+}
+
+#[derive(Serialize)]
+struct IssueListItem {
+    #[serde(flatten)]
+    issue: IssueSummary,
+    /// Events in each of the last 24 hours, the current one last.
+    sparkline: Vec<i32>,
 }
 
 /// `project_membership_required`: the project is looked up first (deleted or not), then access is checked.
@@ -254,9 +285,8 @@ async fn list_issues(
     CurrentUser { user, .. }: CurrentUser,
     Path(project_id): Path<i64>,
     Query(query): Query<IssueListQuery>,
-) -> ApiResult<Paged<IssueSummary>> {
+) -> ApiResult<Paged<IssueListItem>> {
     accessible_project(&state.pool, &user, project_id).await?;
-    // TODO(parity): sparklines.
     let search = Search::prepare(&state.pool, project_id, &query.q).await?;
     query.fetch(&state.pool, &[project_id], &search).await
 }
@@ -279,7 +309,7 @@ async fn global_issue_list(
     State(state): State<ApiState>,
     CurrentUser { user, .. }: CurrentUser,
     Query(query): Query<IssueListQuery>,
-) -> ApiResult<Paged<IssueSummary>> {
+) -> ApiResult<Paged<IssueListItem>> {
     if !query.q.is_empty() {
         return Err(ApiError::BadRequest("search (q) is per project, as upstream's".into()));
     }
@@ -374,7 +404,7 @@ async fn global_issue_actions(
 }
 
 /// `issue_membership_required`: a deleted issue is a 404.
-async fn accessible_issue(pool: &PgPool, user: &User, issue_id: Uuid) -> Result<IssueSummary, ApiError> {
+pub(crate) async fn accessible_issue(pool: &PgPool, user: &User, issue_id: Uuid) -> Result<IssueSummary, ApiError> {
     let issue: IssueSummary = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {ISSUE_COLUMNS} FROM issues_issue WHERE id = $1 AND NOT is_deleted"
     )))
@@ -386,16 +416,8 @@ async fn accessible_issue(pool: &PgPool, user: &User, issue_id: Uuid) -> Result<
     Ok(issue)
 }
 
-async fn get_issue(
-    State(state): State<ApiState>,
-    CurrentUser { user, .. }: CurrentUser,
-    Path(issue_id): Path<Uuid>,
-) -> ApiResult<IssueSummary> {
-    accessible_issue(&state.pool, &user, issue_id).await.map(Json)
-}
-
-const EVENT_SUMMARY_COLUMNS: &str = "id, event_id, issue_id, digest_order, ingested_at, timestamp, level, release,
-    environment, calculated_type, calculated_value";
+pub(crate) const EVENT_SUMMARY_COLUMNS: &str = "id, event_id, issue_id, digest_order, ingested_at, timestamp, level,
+    release, environment, calculated_type, calculated_value";
 
 #[derive(Deserialize)]
 struct EventListQuery {
@@ -439,6 +461,11 @@ async fn get_event(
         .await?
         .ok_or(ApiError::NotFound)?;
     require_project_access(&state.pool, &user, project_id).await?;
+    event_by_id(&state.pool, event_id).await.map(Json)
+}
+
+/// An event with its payload.
+pub(crate) async fn event_by_id(pool: &PgPool, event_id: Uuid) -> Result<Event, ApiError> {
     // TODO(parity): server-side sourcemap application and stacktrace shaping (upstream `events/utils.py`), so the
     // frontend renders frames rather than interpreting raw SDK payloads.
     let event = sqlx::query_as(sqlx::AssertSqlSafe(format!(
@@ -447,7 +474,7 @@ async fn get_event(
          FROM events_event WHERE id = $1"
     )))
     .bind(event_id)
-    .fetch_optional(&state.pool)
+    .fetch_optional(pool)
     .await?;
-    event.map(Json).ok_or(ApiError::NotFound)
+    event.ok_or(ApiError::NotFound)
 }

@@ -197,6 +197,71 @@ if phase == "before":
     status, result, _ = bulk("/api/v1/issues/actions", "unmute", [ids["b"], ids["c"]], cookie=cookie, csrf=csrf)
     check("global bulk unmute", status == 200 and result["unapplied_issue_ids"] == [ids["b"]], (status, result))
 
+    # Issue pages ("b": two events, region eu then us)
+    status, page, _ = call("GET", f"/api/v1/issues/{ids['b']}", cookie=cookie)
+    check("issue page", status == 200 and page["friendly_id"] == "MINE-2" and page["title"] == "b", (status, page))
+    status, tags, _ = call("GET", f"/api/v1/issues/{ids['b']}/tags", cookie=cookie)
+    region = next((k for k in tags if k["key"] == "region"), None) if status == 200 else None
+    check("tags", region is not None and sorted((v["value"], v["count"], v["pct"]) for v in region["values"])
+          == [("eu", 1, 50), ("us", 1, 50)], (status, tags))
+    status, groupings, _ = call("GET", f"/api/v1/issues/{ids['b']}/groupings", cookie=cookie)
+    check("groupings", status == 200 and len(groupings) == 1, (status, groupings))
+    status, first, _ = call("GET", f"/api/v1/issues/{ids['b']}/events/first", cookie=cookie)
+    check("first event", status == 200 and first["nav"] == {"first": 1, "prev": None, "next": 2, "last": 2, "count": 2},
+          (status, first))
+    status, nxt, _ = call("GET", f"/api/v1/issues/{ids['b']}/events/1/next", cookie=cookie)
+    check("next event", status == 200 and nxt["event"]["digest_order"] == 2, (status, nxt))
+    status, _, _ = call("GET", f"/api/v1/issues/{ids['b']}/events/2/next", cookie=cookie)
+    check("no next event: 404", status == 404, status)
+    status, last, _ = call("GET", f"/api/v1/issues/{ids['b']}/events/last?q=region:eu", cookie=cookie)
+    check("last event in a search", status == 200 and last["event"]["digest_order"] == 1
+          and last["nav"]["count"] == 1, (status, last))
+    status, by_id, _ = call("GET", f"/api/v1/issues/{ids['b']}/events/{nxt['event']['event_id']}", cookie=cookie)
+    check("event by the SDK's event_id", status == 200 and by_id["event"]["digest_order"] == 2, status)
+    status, counts, _ = call("GET", f"/api/v1/issues/{ids['b']}/counts", cookie=cookie)
+    check("hourly counts", status == 200 and sum(h["count"] for h in counts["hours"]) == 2, (status, counts))
+    status, page, _ = call("GET", f"{project_issues}?state=all", cookie=cookie)
+    check("issue list sparklines", status == 200 and all(len(i["sparkline"]) == 24 for i in page["items"])
+          and sum(i["sparkline"][-1] for i in page["items"]) == 4, page)
+    status, projects, _ = call("GET", "/api/v1/projects", cookie=cookie)
+    mine_row = next(p for p in projects if p["id"] == mine)
+    check("project list sparkline", mine_row["sparkline"][-1] == 4, mine_row)
+
+    history = f"/api/v1/issues/{ids['b']}/history"
+    status, body, _ = call("POST", f"/api/v1/issues/{ids['b']}/comments", {"comment": "  looking into it \n"},
+                           cookie=cookie, csrf=csrf)
+    check("comment", status == 201 and body["id"], (status, body))
+    comment_id = body["id"]
+    status, body, _ = call("POST", f"/api/v1/issues/{ids['b']}/comments", {"comment": "   "}, cookie=cookie, csrf=csrf)
+    check("empty comment ignored", status == 200 and body["id"] is None, (status, body))
+    status, entries, _ = call("GET", history, cookie=cookie)
+    check("history: newest first, comment stripped", status == 200 and entries[0]["kind"] == 100
+          and entries[0]["comment"] == "looking into it" and entries[0]["user"]["display_name"] == "member@example.org",
+          (status, entries[:1]))
+    comment = f"/api/v1/issues/{ids['b']}/comments/{comment_id}"
+    status, _, _ = call("PATCH", comment, {"comment": "fixed by #12"}, cookie=cookie, csrf=csrf)
+    check("edit own comment", status == 204, status)
+    # the superuser sees the issue, but the comment isn't theirs
+    status, admin_me, admin = login("admin@Example.COM", "admin-pw")
+    status, _, _ = call("PATCH", comment, {"comment": "x"}, cookie=admin, csrf=admin_me["csrf_token"])
+    check("someone else's comment: edit 403", status == 403, status)
+    status, _, _ = call("DELETE", comment, cookie=admin, csrf=admin_me["csrf_token"])
+    check("someone else's comment: delete 403", status == 403, status)
+    resolved_by_member = next(e for e in call("GET", f"/api/v1/issues/{ids['a']}/history", cookie=cookie)[1]
+                              if e["kind"] == 2)
+    status, _, _ = call("DELETE", f"/api/v1/issues/{ids['a']}/comments/{resolved_by_member['id']}", cookie=cookie,
+                        csrf=csrf)
+    check("delete an action's turning point: 403", status == 403, status)
+    status, _, _ = call("PATCH", f"/api/v1/issues/{ids['a']}/comments/{resolved_by_member['id']}",
+                        {"comment": "was a config issue"}, cookie=cookie, csrf=csrf)
+    check("comment on own action", status == 204, status)
+    status, _, _ = call("DELETE", f"/api/v1/issues/{ids['a']}/comments/{comment_id}", cookie=cookie, csrf=csrf)
+    check("comment of another issue: 404", status == 404, status)
+    status, _, _ = call("DELETE", comment, cookie=cookie, csrf=csrf)
+    check("delete own comment", status == 204, status)
+    status, entries, _ = call("GET", history, cookie=cookie)
+    check("comment gone", all(e["id"] != comment_id for e in entries), entries[:1])
+
     status, result, _ = act(ids["c"], "delete", cookie=cookie, csrf=csrf)
     check("delete", status == 200 and result["applied"] and result["issue"] is None, (status, result))
     status, _, _ = call("GET", f"/api/v1/issues/{ids['c']}", cookie=cookie)
