@@ -35,8 +35,8 @@ each page needs; ✅ means it exists already.
 | Global issue list | `issues/issue_list.html` | ✅ `GET /issues?state=&sort=`, bulk ✅ `POST /issues/actions` |
 | Issue header | `issues/base.html` | ✅ `GET /issues/{id}` (title, friendly id, releases, mute conditions), tag summary ✅ `GET /issues/{id}/tags` |
 | **Issue: event details** | `issues/event_details.html`, `_event_nav.html` | ✅ `GET /issues/{id}/events/{first,last,<digest_order>,<event id>}`, `/events/<digest_order>/{prev,next}` (all `?q=`) |
-| **Issue: stacktrace** | `issues/stacktrace.html`, `_stacktrace_frames.html` | ✅ `GET /events/{id}` (+ server-side sourcemaps, highlighted context TODO) |
-| Issue: breadcrumbs | `issues/breadcrumbs.html` | from event data |
+| **Issue: stacktrace** | `issues/stacktrace.html`, `_stacktrace_frames.html` | ✅ event page `display.stacktrace` (applying uploaded sourcemaps TODO) |
+| Issue: breadcrumbs | `issues/breadcrumbs.html` | ✅ event page `display.breadcrumbs` |
 | Issue: event list | `issues/event_list.html` | ✅ `GET /issues/{id}/events?q=` |
 | Issue: tags | `issues/tags.html` | ✅ `GET /issues/{id}/tags?all=true` |
 | Issue: history (turning points, comments) | `issues/history.html` | ✅ `GET /issues/{id}/history`, `POST /issues/{id}/comments`, `PATCH/DELETE /issues/{id}/comments/{id}` |
@@ -67,6 +67,19 @@ info added, 100 comment) with `metadata` for the details, `user` null for Bugsin
 empty one is ignored; users can edit the comment on any of their own entries but only delete their comments. Hourly
 counts cover the 28 days up to the current hour (`hours`, incl. evicted events; with `q=` also `matching`, stored
 events only); upstream shows them in 6/12/24-hour buckets aligned on the installation's local days.
+
+Event pages also carry `display`, the shaping upstream's event views do (rendering is the frontend's: syntax
+highlighting of code context, formatting variables and dates):
+- `stacktrace.entries`: the exceptions (`is_exception_stacktrace: true`), or else the threads (with `thread_title` and
+  `thread_description`), or else the event's own stacktrace; already in display order: with `stack_of_plates`
+  (every platform but Python) the newest call and the outermost exception come first. Frames are the SDK's, plus
+  `raise_point: true` on the frame that raised, `debug_id` for files with a sourcemap that isn't applied, and
+  `vars_incomplete`: items the SDK trimmed from `vars`, by JSON pointer (`""` is `vars` itself), shown by upstream as
+  "<n items trimmed…>". `stacktrace.thread_stacktraces`: with exceptions, all threads (crashed one first) if at
+  least two. Upstream labels the first and last frame of each exception "raise …"/"→ begin" or "try…" (handled).
+- `key_info`, `logentry_info`, `deployment_info`: label/value pairs of the details tab, upstream's labels and order;
+  `contexts` incl. browser and OS derived from the User-Agent; `request_repr`: "METHOD url".
+- `breadcrumbs`: the list, or null.
 
 Not ported: Django admin, `csrf_debug`, debug email previews. Email templates stay server-side (backend renders
 alert/invite emails).

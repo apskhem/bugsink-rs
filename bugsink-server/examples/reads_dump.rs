@@ -5,6 +5,7 @@
 use std::io::BufRead;
 
 use bugsink_db::PgPool;
+use bugsink_server::event_display;
 use bugsink_server::grouping::py::isoformat;
 use bugsink_server::issues::pages;
 use bugsink_server::search::{Search, Searched, parse_query};
@@ -150,6 +151,20 @@ async fn main() -> anyhow::Result<()> {
                 let ids: Vec<i64> = sqlx::query_scalar("SELECT id FROM projects_project").fetch_all(&pool).await?;
                 let sparklines = pages::project_list_sparklines(&pool, &ids, time(&input["now"])).await?;
                 ids.iter().map(|id| (id.to_string(), json!(sparklines[id]))).collect::<Map<_, _>>().into()
+            }
+            "display" => {
+                let id: Uuid = input["event"].as_str().unwrap().parse()?;
+                let d = event_display::for_event(&pool, id).await?.expect("stored in the database");
+                let s = &d.stacktrace;
+                json!({
+                    "stacktrace": {"entries": s.entries, "thread_stacktraces": s.thread_stacktraces,
+                                   "stack_of_plates": s.stack_of_plates,
+                                   "multiple_thread_stacktraces": s.multiple_thread_stacktraces,
+                                   "request_repr": d.request_repr},
+                    "details": {"key_info": d.key_info, "logentry_info": d.logentry_info,
+                                "deployment_info": d.deployment_info, "contexts": d.contexts},
+                    "breadcrumbs": d.breadcrumbs,
+                })
             }
             kind => anyhow::bail!("unknown kind {kind}"),
         };

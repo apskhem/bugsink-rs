@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use super::{ApiError, ApiResult, ApiState, accessible_issue};
 use crate::accounts::CurrentUser;
+use crate::event_display::{self, EventDisplay};
 use crate::issues::pages::{self, IssueDetail, Nav};
 use crate::search::Search;
 
@@ -171,6 +172,8 @@ struct EventPage {
     event: Event,
     /// Within the search, around this event.
     nav: Nav,
+    /// The event as upstream's event pages show it (`crate::event_display`); null when the payload isn't readable.
+    display: Option<EventDisplay>,
 }
 
 async fn event_by_digest_order(
@@ -196,7 +199,8 @@ async fn event_page(
 ) -> ApiResult<EventPage> {
     let digest_order = event.summary.digest_order;
     let nav = pages::nav(&state.pool, issue.id, issue.stored_event_count, search, !q.is_empty(), digest_order).await?;
-    Ok(Json(EventPage { event, nav }))
+    let display = event_display::for_event(&state.pool, event.summary.id).await?;
+    Ok(Json(EventPage { event, nav, display }))
 }
 
 /// `/events/first` and `/events/last` (within the search), `/events/<digest_order>`, `/events/<id>` (our id, or the

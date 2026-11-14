@@ -49,7 +49,11 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
   builds ~2,000 inputs from it and its own functions must give the same answers as ours on that database: search
   (tag terms quoted every way, tag pairs, tags plus text, LIKE wildcards, parser edge cases incl. unclosed quotes,
   escapes and Unicode whitespace) and the issue pages (header, tag summaries at both cut-offs incl. "other" and mostly
-  unique keys, groupings, history, first/prev/next/last within searches, event counts, sparkline counts).
+  unique keys, groupings, history, first/prev/next/last within searches, event counts, sparkline counts), and how
+  every stored event is shown: what upstream's own event views (stack trace, details, breadcrumbs) hand to their
+  templates, for the digest events, the grouping corpus and a display corpus of odd shapes (threads, the SDK's `_meta`
+  trimming annotations incl. malformed ones, sourcemap images, log entries). Events on which upstream's view fails
+  (a 500; we show what we can) are counted, not compared.
 - `user_agents.sh`: the browser/OS/device contexts (and so tags) derived from a request's User-Agent header, for the
   ~30,000 user agents in uap-core's test suite plus malformed inputs, compared with upstream's own function. The
   parser data (`bugsink-server/src/digest/ua_regexes.json`) is exported from the upstream image.
@@ -60,7 +64,8 @@ Ported and verified: ingest (envelope/store, quotas and 429s) and digest (groupi
 time- and volume-based unmute, tags incl. User-Agent-derived ones, hourly counts, eviction and retention), alerts by
 email and messaging services, login with upstream's users and passwords (sessions, CSRF, membership checks on the UI
 API), issue actions (single and bulk, incl. deletion), the issue lists' tabs and search, the issue pages (tags,
-history and comments, groupings, event navigation, sparkline counts), and the database bootstrap/version check. bugsink-rs can take over ingestion and digestion of an upstream
+history and comments, groupings, event navigation, sparkline counts, events shown as upstream shows them), and the
+database bootstrap/version check. bugsink-rs can take over ingestion and digestion of an upstream
 installation today; viewing and managing issues still needs upstream's UI (not at the same time, see below).
 
 ### Not yet ported (upstream behaviour missing)
@@ -69,10 +74,10 @@ In order of importance for production use (code-level gaps also have a `TODO(par
 
 1. **The UI's API.** `/api/v1` has login, logout and the current user; the project and global issue lists (tabs,
    sorts, search, sparklines) with issue actions; the issue pages (header, tags, history and comments, groupings,
-   events with navigation and search, hourly counts). Missing:
+   events with navigation, search and upstream's display shaping, hourly counts). Missing:
    - accounts: signup, email confirmation, password reset, preferences, change password
-   - events as upstream shows them: stack frames with context and sourcemaps applied, `_meta` annotations, breadcrumbs
-     and request data shaped server-side (we pass the SDK's payload through); the issue's Markdown export
+   - applying uploaded sourcemaps to stack frames (frames only get the debug id hint) and the details tab's list of
+     sourcemap images; the issue's Markdown export
    - projects, teams and memberships: create/edit/delete, invitations, roles, alert settings; messaging service
      setup and test messages; SDK setup pages
    - installation: users admin, auth tokens, settings and counts pages
@@ -91,7 +96,8 @@ In order of importance for production use (code-level gaps also have a `TODO(par
 
 Known deliberate differences: an envelope whose event payload is not valid JSON gets a 400 at ingest (upstream returns
 200 and drops the event during digest). A search of only whitespace (or only terms the parser skips) matches
-everything (upstream answers 500).
+everything (upstream answers 500). An event page for an event whose payload upstream's views can't handle (e.g. frames
+that aren't a list of objects, malformed sourcemap images) shows what can be shown (upstream answers 500).
 
 ## Layout
 
@@ -113,6 +119,7 @@ bugsink-server/        the `bugsink` binary (src/main.rs: CLI, config, HTTP, in-
   src/issues           issue actions (resolve, mute, delete, ...; single and bulk), deleting issues' rows, and what
                        the issue pages show (pages.rs)
   src/search.rs        issue and event search: query parser, tag and text matching
+  src/event_display.rs an event as upstream's event pages show it (stack traces, details, breadcrumbs)
   src/proxy.rs         the client's address behind a reverse proxy (X-Real-IP / X-Forwarded-For)
   src/vacuum.rs        `bugsink vacuum`: cleanup of eventless issue tags, unused tags, deleted issues
   src/accounts         users (upstream's auth_user, Django's password hashes), login sessions, CSRF

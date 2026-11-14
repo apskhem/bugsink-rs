@@ -8,6 +8,7 @@
 #   nav: _first_last / _get_event prev and next / _event_count, within searches
 #   list_sparklines: get_issue_list_event_sparklines / get_project_list_event_sparklines counts
 #   hourly: get_issue_event_sparkline's queries (hourly counts; with a search, the matching events per hour)
+#   display: what issue_event_stacktrace / _details / _breadcrumbs hand to their templates, for every event
 import json
 from datetime import datetime, timedelta, timezone as dt_timezone
 
@@ -163,3 +164,86 @@ projects = list(Project.objects.order_by("id").values_list("id", flat=True))
 emit({"kind": "project_sparklines", "now": NOW.isoformat()},
      {str(p): [b["count"] for b in s["event_buckets"]]
       for p, s in get_project_list_event_sparklines(projects, NOW).items()})
+
+
+# Event display: upstream's own views, with `render` replaced to capture the template context.
+from unittest import mock  # noqa: E402
+
+from django.http import HttpResponse  # noqa: E402
+from django.test import RequestFactory  # noqa: E402
+
+import issues.views as views  # noqa: E402
+import phonehome.utils  # noqa: E402
+from users.models import User  # noqa: E402
+
+captured = {}
+
+
+def capture(request, template, context):
+    captured.clear()
+    captured.update(context)
+    return HttpResponse()
+
+
+def incomplete_marks(value, pointer, marks):
+    """IncompleteList/IncompleteDict (annotate_with_meta) as {JSON pointer: items trimmed}."""
+    if hasattr(value, "incomplete"):
+        marks[pointer] = value.incomplete
+    if isinstance(value, dict):
+        for k, v in value.items():
+            incomplete_marks(v, pointer + "/" + str(k).replace("~", "~0").replace("/", "~1"), marks)
+    elif isinstance(value, list):
+        for i, v in enumerate(value):
+            incomplete_marks(v, f"{pointer}/{i}", marks)
+
+
+def with_marks(entries):
+    for entry in entries:
+        frames = entry.get("stacktrace", {}).get("frames") if isinstance(entry.get("stacktrace"), dict) else None
+        for frame in frames if isinstance(frames, list) else []:
+            if isinstance(frame, dict) and "vars" in frame:
+                marks = {}
+                incomplete_marks(frame["vars"], "", marks)
+                if marks:
+                    frame["vars_incomplete"] = marks
+    return entries
+
+
+from snappea.settings import get_settings as get_snappea_settings  # noqa: E402
+
+# Viewing a sourcemapped event records file accesses as a task: run it inline (no snappea database here).
+get_snappea_settings()["TASK_ALWAYS_EAGER"] = True
+admin = User.objects.order_by("id").first()
+admin.is_superuser = True  # in memory only: what the views' membership checks look at
+rf = RequestFactory()
+PARTS = [("stacktrace", views.issue_event_stacktrace), ("details", views.issue_event_details),
+         ("breadcrumbs", views.issue_event_breadcrumbs)]
+with mock.patch.object(views, "render", capture), \
+        mock.patch.object(phonehome.utils, "phone_home_is_due", return_value=False):
+    for event in Event.objects.order_by("project_id", "ingested_at", "id"):
+        result = {}
+        for part, view in PARTS:
+            request = rf.get("/")
+            request.user = admin
+            try:
+                view(request, issue_pk=event.issue_id, event_pk=event.id)
+            except Exception as e:  # upstream answers 500
+                result[part] = f"error: {type(e).__name__}"
+                continue
+            c = captured
+            if part == "stacktrace":
+                result[part] = {
+                    "entries": with_marks(c["exceptions"]), "thread_stacktraces": with_marks(c["thread_stacktraces"]),
+                    "stack_of_plates": c["stack_of_plates"],
+                    "multiple_thread_stacktraces": c["multiple_thread_stacktraces"],
+                    "request_repr": c["request_repr"]}
+            elif part == "details":
+                dates = {"timestamp": event.timestamp, "ingested at": event.ingested_at,
+                         "digested at": event.digested_at}  # upstream formats these as HTML
+                result[part] = {
+                    "key_info": [[k, dates[k].isoformat() if k in dates else v] for k, v in c["key_info"]],
+                    "logentry_info": c["logentry_info"], "deployment_info": c["deployment_info"],
+                    "contexts": c["contexts"]}
+            else:
+                result[part] = c["breadcrumbs"]
+        print(json.dumps({"input": {"kind": "display", "event": str(event.id)}, "result": result}, default=str))

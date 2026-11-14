@@ -35,8 +35,23 @@ for i in range(40):
                       "digested_at": (at + timedelta(seconds=1)).isoformat(), "remote_addr": "203.0.113.5",
                       "event": event}))
 PY
+# Plus events to show: the display corpus and the grouping corpus (what digest drops never gets shown).
+python3 tools/parity/make_display_corpus.py >/dev/null
+python3 tools/parity/make_grouping_corpus.py >/dev/null
+python3 - tools/parity/display-corpus.jsonl tools/parity/grouping-corpus.jsonl > "$out/shown.jsonl" <<'PY'
+import json, sys
+from datetime import datetime, timedelta, timezone
+t0 = datetime(2026, 11, 1, 21, 0, tzinfo=timezone.utc)
+lines = [line for path in sys.argv[1:] for line in open(path)]
+for i, line in enumerate(lines):
+    at = t0 + timedelta(seconds=10 * i)
+    print(json.dumps({"n": 2000 + i, "project_id": 1, "event_id": f"{0xd15000 + i:032x}", "ingested_at": at.isoformat(),
+                      "digested_at": (at + timedelta(seconds=1)).isoformat(), "remote_addr": "203.0.113.5",
+                      "event": json.loads(line)}))
+PY
 grep -v -e alerts_messagingserviceconfig -e 'SET retention_max_event_count' -e '"vacuum"' \
-    tools/parity/digest-steps.jsonl | cat - "$out/busy.jsonl" | ./target/debug/examples/replay >/dev/null
+    tools/parity/digest-steps.jsonl | cat - "$out/busy.jsonl" "$out/shown.jsonl" \
+    | ./target/debug/examples/replay >/dev/null
 
 docker run --rm -i --network "$net" -e SECRET_KEY=parity -e "DATABASE_URL=postgres://postgres:pw@$pg:5432/reads" \
     "$image" bugsink-manage shell -c "$(cat tools/parity/upstream_reads.py)" | grep '^{' > "$out/upstream.jsonl"
@@ -46,6 +61,20 @@ for line in sys.stdin: print(json.dumps(json.loads(line)["input"]))' < "$out/ups
 
 python3 - "$out/upstream.jsonl" "$out/ours.jsonl" <<'EOF'
 import json, sys
+
+
+upstream_errors = 0
+
+
+def tolerant_display(u, o):
+    """Where upstream's view fails (a 500), we show what we can: nothing to compare."""
+    global upstream_errors
+    if u["input"]["kind"] == "display":
+        for part, value in u["result"].items():
+            if isinstance(value, str) and value.startswith("error: "):
+                o["result"][part] = value
+                upstream_errors += 1
+    return u, o
 
 
 def tolerant(record):
@@ -66,7 +95,7 @@ upstream = [tolerant(json.loads(line)) for line in open(sys.argv[1])]
 ours = [tolerant(json.loads(line)) for line in open(sys.argv[2])]
 assert len(upstream) == len(ours), (len(upstream), len(ours))
 kinds, diffs = {}, 0
-for u, o in zip(upstream, ours):
+for u, o in (tolerant_display(u, o) for u, o in zip(upstream, ours)):
     kind = u["input"]["kind"]
     kinds[kind] = kinds.get(kind, 0) + 1
     if u != o:
@@ -76,7 +105,8 @@ for u, o in zip(upstream, ours):
             print("  upstream:", json.dumps(u["result"], ensure_ascii=False)[:300])
             print("  ours:    ", json.dumps(o["result"], ensure_ascii=False)[:300])
 nonempty = sum(1 for u in upstream if isinstance(u["result"], list) and u["result"])
-print(f"compared: {kinds}; with matches: {nonempty}; differences: {diffs}")
+print(f"compared: {kinds}; with matches: {nonempty}; differences: {diffs}; "
+      f"event views upstream fails on (not compared): {upstream_errors}")
 print("outputs in", sys.argv[1].rsplit("/", 1)[0])
 sys.exit(1 if diffs else 0)
 EOF

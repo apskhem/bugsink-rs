@@ -5,6 +5,7 @@ pub mod accounts;
 pub mod alerts;
 pub mod api;
 pub mod digest;
+pub mod event_display;
 mod event_counter;
 pub mod grouping;
 pub mod ingest;

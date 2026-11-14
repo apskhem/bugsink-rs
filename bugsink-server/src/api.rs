@@ -466,8 +466,7 @@ async fn get_event(
 
 /// An event with its payload.
 pub(crate) async fn event_by_id(pool: &PgPool, event_id: Uuid) -> Result<Event, ApiError> {
-    // TODO(parity): server-side sourcemap application and stacktrace shaping (upstream `events/utils.py`), so the
-    // frontend renders frames rather than interpreting raw SDK payloads.
+    // The payload as the SDK sent it; the issue event pages add how upstream shows it (`crate::event_display`).
     let event = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT {EVENT_SUMMARY_COLUMNS}, platform, server_name, sdk_name, sdk_version,
                 CASE WHEN storage_backend IS NULL THEN data::json END AS data

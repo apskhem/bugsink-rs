@@ -209,6 +209,10 @@ if phase == "before":
     status, first, _ = call("GET", f"/api/v1/issues/{ids['b']}/events/first", cookie=cookie)
     check("first event", status == 200 and first["nav"] == {"first": 1, "prev": None, "next": 2, "last": 2, "count": 2},
           (status, first))
+    display = first.get("display") or {} if status == 200 else {}
+    key_info = dict(display.get("key_info", []))
+    check("event display", key_info.get("digest order") == 1 and key_info.get("title") == "b"
+          and display["deployment_info"] == [] and display["stacktrace"]["stack_of_plates"], display)
     status, nxt, _ = call("GET", f"/api/v1/issues/{ids['b']}/events/1/next", cookie=cookie)
     check("next event", status == 200 and nxt["event"]["digest_order"] == 2, (status, nxt))
     status, _, _ = call("GET", f"/api/v1/issues/{ids['b']}/events/2/next", cookie=cookie)
