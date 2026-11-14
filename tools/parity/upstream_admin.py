@@ -12,12 +12,18 @@ from unittest import mock
 from django.contrib.auth.models import AnonymousUser
 from django.contrib.sessions.backends.db import SessionStore
 from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
+from django.core.management import call_command
 from django.db import IntegrityError, connection
 from django.http import Http404, HttpResponse
 from django.test import RequestFactory
 from django.utils import translation
 
+import bsmain.views as bv
+import bugsink.views as gv
 import django.contrib.messages.api
+import phonehome.utils
+from bugsink.context_processors import useful_settings_processor
+from bsmain.models import AuthToken
 import projects.views as pv
 import teams.views as tv
 import users.views as uv
@@ -28,6 +34,7 @@ from teams.models import Team
 from users.models import EmailVerification, User
 
 get_snappea_settings()["TASK_ALWAYS_EAGER"] = True  # invitation emails and project deletion run inline
+call_command("migrate", database="snappea", verbosity=0)  # the counts page counts snappea's (own) database too
 MODE = os.environ["MODE"]
 CAPTURE = "captu.test:8025"
 SNAPSHOT = [s for s in open("/out/admin_snapshot.sql").read().split(";")
@@ -152,6 +159,26 @@ def run(step):
             "old_password": s["old_password"], "new_password1": s["new_password"],
             "new_password2": s["new_password"]}), {}),
     })
+    token = lambda: AuthToken.objects.filter(description=s["token"]).order_by("-id").first()  # noqa
+    calls.update({
+        "home": lambda: (gv.home, get(), {}),
+        "users": lambda: (uv.user_list, get(), {}),
+        "user_edit": lambda: (uv.user_edit, post({"username": s["email"]}), {"user_pk": user_pk(s["user"])}),
+        "user_activate": lambda: (uv.user_list, post({"action": f"activate:{user_pk(s['user'])}"}), {}),
+        "user_deactivate": lambda: (uv.user_list, post({"action": f"deactivate:{user_pk(s['user'])}"}), {}),
+        "user_delete": lambda: (uv.user_list, post({"action": f"delete:{user_pk(s['user'])}"}), {}),
+        "token_create": lambda: (bv.auth_token_create, post({
+            "description": s["description"],
+            **({"is_user_bound": "on"} if s.get("is_user_bound") else {}),
+            "project": project_pk(s["project"]) if s.get("project") else "",
+            **{c.replace(":", "_").replace("-", "_"): "on" for c in s["capabilities"]}}), {}),
+        "token_list": lambda: (bv.auth_token_list, get(), {}),
+        "token_revoke": lambda: (bv.auth_token_list, post({"action": f"revoke:{token().pk}"}), {}),
+        "counts": lambda: (gv.counts, get(), {}),
+        "settings": lambda: (gv.settings_view, get(), {}),
+        "system_warnings": lambda: (None, get(), {}),
+        "silence_email": lambda: (gv.silence_email_system_warning, post({}), {}),
+    })
     for k in ("team", "project"):
         mod = {"team": tv, "project": pv}[k]
         calls.update({
@@ -179,7 +206,11 @@ def run(step):
     levels.clear()
     try:
         view, request, kwargs = calls[op]()
-        response = view(request, **kwargs)
+        if op == "system_warnings":  # what the base template shows
+            captured["warnings"] = useful_settings_processor(request)["system_warnings"]()
+            response = HttpResponse()
+        else:
+            response = view(request, **kwargs)
     except PermissionDenied:
         result["outcome"] = "forbidden"
     except (Http404, ObjectDoesNotExist):
@@ -195,13 +226,16 @@ def run(step):
                        **(config_form.errors if config_form is not None else {})}
         if any(level >= 30 for level in levels):
             result["outcome"] = "refused"
+        elif response.get("Location", "").startswith("/accounts/login/"):
+            result["outcome"] = "forbidden"  # user_passes_test(is_superuser) sends others to log in
         elif op.endswith("member_settings") and response.get("Location", "").endswith("/members/accept/"):
             result["outcome"] = "refused"  # not accepted yet: sent to the invitation instead
         elif response.status_code == 200 and form_errors:
             result["outcome"] = "invalid"
             rename = {"signup": {"username": "email", "password1": "password", "password2": "password"},
                       "reset_password": {"new_password1": "password", "new_password2": "password"},
-                      "change_password": {"new_password1": "new_password", "new_password2": "new_password"}}
+                      "change_password": {"new_password1": "new_password", "new_password2": "new_password"},
+                      "user_edit": {"username": "email"}}
             result["errors"] = {}
             for k, v in form_errors.items():
                 messages = [re.sub("<[^>]*>", "", m) for m in v]  # upstream's are HTML; ours plain text
@@ -213,7 +247,12 @@ def run(step):
             result["link"] = notice.link
         if op == "accept_new_user" and response.status_code == 302:
             result["needs_password"] = "reset-password" in response["Location"]
-        result["read"] = read(op, captured)
+        if result["outcome"] == "ok":
+            result["read"] = read(op, captured)
+        if op == "home" and response.status_code == 302:
+            location = response["Location"]
+            result["read"] = ("issues/" + location.strip("/").split("/")[1]) if location.startswith("/issues/") \
+                else location.strip("/")
     result["snapshot"] = snapshot()
     return result
 
@@ -231,12 +270,25 @@ def read(op, c):
         return sorted([m.user.email, m.role, m.accepted, m.send_email_alerts, m.user.is_active] for m in c["members"])
     if op == "sdk_setup":
         return c["dsn"]
+    if op == "users":
+        return [[u.username, u.email, u.is_active, u.is_superuser] for u in c["users"]]
+    if op == "token_list":
+        return sorted([t.description, t.is_user_bound, t.user.email if t.user else None,
+                       t.project.name if t.project else None, sorted(t.capabilities), t.has_all_capabilities]
+                      for t in c["auth_tokens"])
+    if op == "counts":
+        return {app: {m: n.count for m, n in models.items()} for app, models in c["counts"].items() if app != "snappea"}
+    if op == "system_warnings":
+        return [[" ".join(re.sub("<[^>]*>", "", str(w.message)).split()), w.ignore_url is not None]
+                for w in c["warnings"]]
     if op == "services":
         return [[sc.display_name, sc.kind, json.loads(sc.config)] for sc in c["service_configs"].order_by("id")]
     return None
 
 
 with mock.patch.object(tv, "render", capture), mock.patch.object(pv, "render", capture), \
+        mock.patch.object(bv, "render", capture), mock.patch.object(gv, "render", capture), \
+        mock.patch.object(phonehome.utils, "phone_home_is_due", return_value=False), \
         mock.patch.object(uv, "render", capture), \
         mock.patch.object(django.contrib.messages.api, "add_message", record_message):
     for line in sys.stdin:

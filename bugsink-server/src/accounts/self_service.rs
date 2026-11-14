@@ -107,7 +107,8 @@ pub async fn signup(
         return super::start_session(&state, tx, &headers, user_id).await;
     }
     let token = memberships::create_email_verification(&mut tx, user_id).await?;
-    tasks::enqueue(&mut *tx, JOB_KIND, &AccountEmail { kind: Kind::Confirm, email: username.clone(), token })
+    let job = AccountEmail { kind: Kind::Confirm, email: username.clone(), token, reason: String::new() };
+    tasks::enqueue(&mut *tx, JOB_KIND, &job)
         .await
         .map_err(ApiError::internal)?;
     tx.commit().await?;
@@ -247,7 +248,8 @@ pub async fn request_reset_password(
 async fn send(state: &ApiState, user_id: i64, kind: Kind, email: String) -> Result<(), ApiError> {
     let mut tx = state.pool.begin().await?;
     let token = memberships::create_email_verification(&mut tx, user_id).await?;
-    tasks::enqueue(&mut *tx, JOB_KIND, &AccountEmail { kind, email, token }).await.map_err(ApiError::internal)?;
+    let job = AccountEmail { kind, email, token, reason: String::new() };
+    tasks::enqueue(&mut *tx, JOB_KIND, &job).await.map_err(ApiError::internal)?;
     tx.commit().await?;
     Ok(())
 }
@@ -368,6 +370,7 @@ pub const JOB_KIND: &str = "account_email";
 enum Kind {
     Confirm,
     Reset,
+    Welcome,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -375,6 +378,26 @@ struct AccountEmail {
     kind: Kind,
     email: String,
     token: String,
+    /// Welcome emails: why they were added (the email's first line).
+    #[serde(default)]
+    reason: String,
+}
+
+/// Upstream's `send_welcome_email` command: an email to a user with a link to set their password.
+pub async fn send_welcome_email(pool: &bugsink_db::PgPool, email: &str, reason: &str) -> anyhow::Result<()> {
+    let Some(user_id): Option<i64> = sqlx::query_scalar("SELECT id FROM auth_user WHERE email = $1")
+        .bind(email)
+        .fetch_optional(pool)
+        .await?
+    else {
+        anyhow::bail!("no user with email address {email:?}");
+    };
+    let mut tx = pool.begin().await?;
+    let token = memberships::create_email_verification(&mut tx, user_id).await?;
+    let job = AccountEmail { kind: Kind::Welcome, email: email.to_owned(), token, reason: reason.to_owned() };
+    tasks::enqueue(&mut *tx, JOB_KIND, &job).await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 /// `send_confirm_email` / `send_reset_email`.
@@ -401,11 +424,21 @@ pub async fn handle_job(pool: bugsink_db::PgPool, payload: Value, settings: Arc<
             "reset_url",
             format!("{base_url}/accounts/reset-password/{}/", job.token),
         ),
+        Kind::Welcome => (
+            "Welcome to Bugsink",
+            (
+                include_str!("../alerts/templates/welcome_email.html"),
+                include_str!("../alerts/templates/welcome_email.txt"),
+            ),
+            "reset_url",
+            format!("{base_url}/accounts/reset-password/{}/", job.token),
+        ),
     };
     let ctx: template::Context = [
         ("site_title", settings.site_title.as_str()),
         ("base_url", base_url_slash.as_str()),
         (url_key, url.as_str()),
+        ("reason", job.reason.as_str()),
     ]
     .into_iter()
     .collect();

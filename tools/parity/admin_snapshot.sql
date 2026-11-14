@@ -16,6 +16,13 @@ FROM projects_project p LEFT JOIN teams_team t ON t.id = p.team_id ORDER BY p.sl
 SELECT concat_ws(' | ', 'project_member', p.slug, u.email, m.role, m.accepted, coalesce(m.send_email_alerts::text, 'null'))
 FROM projects_projectmembership m JOIN projects_project p ON p.id = m.project_id JOIN auth_user u ON u.id = m.user_id
 ORDER BY p.slug, u.email;
+SELECT concat_ws(' | ', 'token', t.description, coalesce(u.email, 'null'), coalesce(p.slug, 'null'), t.is_user_bound,
+                 t.is_project_bound, t.expires_at IS NOT NULL, t.issues_read, t.events_read, t.issues_comment,
+                 t.issues_triage, t.issues_delete, t.releases_read, t.releases_create, t.debug_files_upload,
+                 t.projects_read, t.projects_manage, t.teams_read, t.teams_manage, length(t.token))
+FROM bsmain_authtoken t LEFT JOIN auth_user u ON u.id = t.user_id LEFT JOIN projects_project p ON p.id = t.project_id
+ORDER BY t.description, t.id;
+SELECT concat_ws(' | ', 'installation', silence_email_system_warning) FROM phonehome_installation;
 SELECT concat_ws(' | ', 'verification', u.email, v.email, count(*))
 FROM users_emailverification v JOIN auth_user u ON u.id = v.user_id GROUP BY u.email, v.email ORDER BY u.email;
 SELECT concat_ws(' | ', 'service', p.slug, s.display_name, s.kind, s.config, s.last_failure_timestamp IS NOT NULL,

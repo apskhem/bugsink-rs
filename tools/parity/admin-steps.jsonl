@@ -126,3 +126,39 @@
 {"n": 125, "as": "carol@example.org", "op": "team_list", "tab": "other"}
 {"n": 126, "as": "alice@example.org", "op": "team_remove", "team": "Alpha Team", "user": "bob@example.org"}
 {"n": 127, "as": "alice@example.org", "op": "team_remove", "team": "Alpha Team", "user": "alice@example.org"}
+{"n": 128, "as": "dora@example.org", "op": "home"}
+{"n": 129, "as": "bob@example.org", "op": "home"}
+{"n": 130, "as": "alice@example.org", "op": "home"}
+{"n": 131, "as": "alice@example.org", "op": "users"}
+{"n": 132, "as": "admin@example.org", "op": "users"}
+{"n": 133, "as": "admin@example.org", "op": "user_edit", "user": "dora@example.org", "email": "not-an-email"}
+{"n": 134, "as": "admin@example.org", "op": "user_edit", "user": "dora@example.org", "email": "alice@example.org"}
+{"n": 135, "as": "admin@example.org", "op": "user_edit", "user": "dora@example.org", "email": "a!b@example.org"}
+{"n": 136, "as": "admin@example.org", "op": "user_edit", "user": "dora@example.org", "email": " dora.new@example.org "}
+{"n": 137, "as": "admin@example.org", "op": "user_delete", "user": "alice@example.org"}
+{"n": 138, "as": "admin@example.org", "op": "user_deactivate", "user": "second.new@example.org"}
+{"n": 139, "as": "admin@example.org", "op": "user_activate", "user": "second.new@example.org"}
+{"n": 140, "as": "admin@example.org", "op": "user_deactivate", "user": "carol@example.org"}
+{"n": 141, "as": "admin@example.org", "op": "user_delete", "user": "carol@example.org"}
+{"n": 142, "as": "alice@example.org", "op": "token_create", "description": "nothing", "capabilities": []}
+{"n": 143, "as": "alice@example.org", "op": "token_create", "description": "", "project": "web-app", "capabilities": ["issues:read", "teams:read"]}
+{"n": 144, "as": "alice@example.org", "op": "token_create", "description": "CI", "project": "web-app", "capabilities": ["issues:read", "events:read"]}
+{"n": 145, "as": "alice@example.org", "op": "token_create", "description": "mine anyway", "is_user_bound": false, "capabilities": ["projects:read"]}
+{"n": 146, "as": "alice@example.org", "op": "token_create", "description": "theirs", "project": "elsewhere", "capabilities": ["issues:read"]}
+{"n": 147, "as": "admin@example.org", "op": "token_create", "description": "service", "is_user_bound": false, "capabilities": ["issues:read", "events:read", "issues:comment", "issues:triage", "issues:delete", "releases:read", "releases:create", "debug-files:upload", "projects:read", "projects:manage", "teams:read", "teams:manage"]}
+{"n": 148, "as": "admin@example.org", "op": "token_create", "description": "personal", "is_user_bound": true, "capabilities": ["teams:manage"]}
+{"n": 149, "as": "alice@example.org", "op": "token_list"}
+{"n": 150, "as": "admin@example.org", "op": "token_list"}
+{"n": 151, "as": "alice@example.org", "op": "token_revoke", "token": "service"}
+{"n": 152, "as": "alice@example.org", "op": "token_revoke", "token": "CI"}
+{"n": 153, "as": "alice@example.org", "op": "token_revoke", "token": "CI"}
+{"n": 154, "as": "admin@example.org", "op": "token_list"}
+{"n": 155, "as": "alice@example.org", "op": "counts"}
+{"n": 156, "as": "admin@example.org", "op": "counts"}
+{"n": 157, "as": "alice@example.org", "op": "settings"}
+{"n": 158, "as": "admin@example.org", "op": "settings"}
+{"n": 159, "as": "alice@example.org", "op": "system_warnings"}
+{"n": 160, "as": "admin@example.org", "op": "system_warnings"}
+{"n": 161, "as": "alice@example.org", "op": "silence_email"}
+{"n": 162, "as": "admin@example.org", "op": "silence_email"}
+{"n": 163, "as": "alice@example.org", "op": "system_warnings"}

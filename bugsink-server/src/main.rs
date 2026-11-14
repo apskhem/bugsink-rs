@@ -46,6 +46,14 @@ enum Command {
     Migrate,
     /// Create a project (in no team, without members) and print its DSN.
     CreateProject { name: String },
+    /// Email a user a link to set their password, with why they were added as its first line (upstream's
+    /// `send_welcome_email`). Workers send it.
+    SendWelcomeEmail {
+        #[arg(long)]
+        email: String,
+        #[arg(long)]
+        reason: String,
+    },
     /// Clean up stale rows, as upstream's `vacuum` command; with no flags, all of the below. Nothing runs this
     /// automatically (upstream neither): schedule it, e.g. daily.
     Vacuum {
@@ -113,6 +121,11 @@ async fn main() -> anyhow::Result<()> {
         }
         Command::CreateProject { name } => create_project(&pool, &name, cli.settings.alerts.base_url()).await,
         Command::CreateSuperuser { email } => create_superuser(&pool, &email).await,
+        Command::SendWelcomeEmail { email, reason } => {
+            accounts::self_service::send_welcome_email(&pool, &email, &reason).await?;
+            println!("Email sent successfully (delayed task)");
+            Ok(())
+        }
         Command::Vacuum { eventless_issuetags, tags, deleted_issues } => {
             let all = !(eventless_issuetags || tags || deleted_issues);
             let what = vacuum::What {

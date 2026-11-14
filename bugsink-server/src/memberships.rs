@@ -39,6 +39,9 @@ pub struct UserSettings {
     /// New users signing up have to confirm their email address before they can log in.
     #[arg(long, env = "USER_REGISTRATION_VERIFY_EMAIL", default_value = "true", value_parser = py_bool)]
     pub user_registration_verify_email: bool,
+    /// Hides the settings page (and, upstream, error details).
+    #[arg(long, env = "MINIMIZE_INFORMATION_EXPOSURE", default_value = "false", value_parser = py_bool)]
+    pub minimize_information_exposure: bool,
     /// Who may create teams: CB_ANYBODY, CB_MEMBERS, CB_ADMINS or CB_NOBODY.
     #[arg(long, env = "TEAM_CREATION", default_value = "CB_MEMBERS")]
     pub team_creation: String,

@@ -21,6 +21,7 @@ use serde_json::json;
 use sqlx::QueryBuilder;
 use uuid::Uuid;
 
+mod installation;
 mod issue_pages;
 mod members;
 mod project_admin;
@@ -93,6 +94,7 @@ pub fn router(state: ApiState) -> Router {
         .merge(teams::routes())
         .merge(project_admin::routes())
         .merge(members::routes())
+        .merge(installation::routes())
         .with_state(state)
 }
 

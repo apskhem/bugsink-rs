@@ -137,6 +137,26 @@ def run(s):
         "preferences": lambda: ("PATCH", "/api/v1/me", fields("send_email_alerts", "theme_preference", "language")),
         "change_password": lambda: ("POST", "/api/v1/me/password", fields("old_password", "new_password")),
     })
+    token = lambda: one(f"SELECT id FROM bsmain_authtoken WHERE description = '{s['token']}' "  # noqa
+                        "ORDER BY id DESC LIMIT 1") or "999999"
+    calls.update({
+        "home": lambda: ("GET", "/api/v1/home", None),
+        "users": lambda: ("GET", "/api/v1/users", None),
+        "user_edit": lambda: ("PATCH", f"/api/v1/users/{user_id(s['user'])}", fields("email")),
+        "user_activate": lambda: ("POST", f"/api/v1/users/{user_id(s['user'])}/activate", None),
+        "user_deactivate": lambda: ("POST", f"/api/v1/users/{user_id(s['user'])}/deactivate", None),
+        "user_delete": lambda: ("DELETE", f"/api/v1/users/{user_id(s['user'])}", None),
+        "token_create": lambda: ("POST", "/api/v1/auth-tokens", {
+            "description": s["description"], "is_user_bound": s.get("is_user_bound", False),
+            "project_id": int(project_id(s["project"])) if s.get("project") else None,
+            "capabilities": s["capabilities"]}),
+        "token_list": lambda: ("GET", "/api/v1/auth-tokens", None),
+        "token_revoke": lambda: ("DELETE", f"/api/v1/auth-tokens/{token()}", None),
+        "counts": lambda: ("GET", "/api/v1/counts", None),
+        "settings": lambda: ("GET", "/api/v1/settings", None),
+        "system_warnings": lambda: ("GET", "/api/v1/system-warnings", None),
+        "silence_email": lambda: ("POST", "/api/v1/system-warnings/email/silence", None),
+    })
     for k in ("team", "project"):
         calls.update({
             f"{k}_invite": lambda: ("POST", group() + "/members", fields("email", "role")),
@@ -171,6 +191,7 @@ def run(s):
 
 
 def read(op, r):
+    emails = {int(i): e for i, e in (row.split("|") for row in psql("SELECT id || '|' || email FROM auth_user"))}
     my = lambda x: (  # noqa
         [x["my_role"], x["my_accepted"], x["my_send_email_alerts"]] if x["my_role"] is not None else None)
     if op == "team_list":
@@ -182,6 +203,18 @@ def read(op, r):
                       for m in r["members"])
     if op == "sdk_setup":
         return r["dsn"]
+    if op == "home":
+        return f"issues/{r['project_id']}" if r["go"] == "issues" else r["go"]
+    if op == "users":
+        return [[u["username"], u["email"], u["is_active"], u["is_superuser"]] for u in r]
+    if op == "token_list":
+        return sorted([t["description"], t["is_user_bound"], emails.get(t["user"]["id"]) if t["user"] else None,
+                       t["project"]["name"] if t["project"] else None, sorted(t["capabilities"]),
+                       t["has_all_capabilities"]] for t in r)
+    if op == "counts":
+        return {app: models for app, models in r.items() if app != "jobs"}
+    if op == "system_warnings":
+        return [[w["message"], w["silenceable"]] for w in r]
     if op == "services":
         return [[sc["display_name"], sc["kind"], sc["config"]] for sc in r["services"]]
     return None

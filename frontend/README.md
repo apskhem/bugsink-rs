@@ -44,9 +44,11 @@ each page needs; ✅ means it exists already.
 | Issue: grouping | `issues/grouping.html` | ✅ `GET /issues/{id}/groupings` |
 | Issue actions (resolve, resolve in release, mute for/until, unmute, delete) | buttons across `issues/base.html` | ✅ `POST /issues/{id}/actions` |
 | Sparklines | `events/_event_sparkline*.html` | ✅ lists: `sparkline` (24 hourly counts); issue: `GET /issues/{id}/counts?q=` |
-| Users admin | `users/user_{list,edit}.html` | `/users` |
-| Auth tokens | `bsmain/auth_token_{list,create}.html` | `/auth-tokens` |
-| Settings, counts | `templates/bugsink/{settings,counts}.html` | `/settings`, `/counts` |
+| Home (`/`) | `bugsink/views.py::home` | ✅ `GET /home` (`{"go": "issues", "project_id"}`, `"projects"` or `"teams"`) |
+| System warnings (banners on every page) | `base.html` | ✅ `GET /system-warnings`, `POST /system-warnings/email/silence` |
+| Users admin | `users/user_{list,edit}.html` | ✅ `GET /users`, `PATCH/DELETE /users/{id}` (only inactive users can be deleted), `POST /users/{id}/activate\|deactivate` |
+| Auth tokens | `bsmain/auth_token_{list,create}.html` | ✅ `GET /auth-tokens`, `GET /auth-tokens/new` (capabilities, projects), `POST /auth-tokens`, `DELETE /auth-tokens/{id}` (revoke) |
+| Settings, counts | `templates/bugsink/{settings,counts}.html` | ✅ `GET /settings`, `GET /counts` (superusers) |
 | Error pages | `templates/{400,403,404,500,503}.html` | n/a (client-side) |
 
 Issue actions take upstream's action strings as `{"action": ...}` (bulk: plus `"issue_ids": [...]`): `resolve`,

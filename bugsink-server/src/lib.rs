@@ -9,6 +9,7 @@ pub mod event_display;
 mod event_counter;
 pub mod grouping;
 pub mod ingest;
+pub mod installation;
 pub mod issues;
 pub mod memberships;
 pub mod projects;

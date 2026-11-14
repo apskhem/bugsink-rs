@@ -57,8 +57,8 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
 - `admin.sh`: team, project and membership management. A scenario of ~100 steps (creating, editing and deleting teams
   and projects, joining and leaving, inviting existing and new users, member settings, answering invitations, new
   users setting their password, messaging services with test messages, signing up, confirming the address, password
-  resets, preferences and password changes, plus what must be refused and what lists show) goes through upstream's
-  own views and through our API, on databases set up alike, once with email and once
+  resets, preferences and password changes, the users admin, auth tokens, counts, settings, system warnings and where
+  "home" goes, plus what must be refused and what lists show) goes through upstream's own views and through our API, on databases set up alike, once with email and once
   without (invite links instead, and signing up without confirming the address). After every step the outcome (incl. each form's error messages), invite links and
   a snapshot of users, teams, projects, memberships, tokens and messaging services must agree; at the end, the
   emails (invitations, confirmations, password resets) and test messages sent.
@@ -75,7 +75,8 @@ API), issue actions (single and bulk, incl. deletion), the issue lists' tabs and
 history and comments, groupings, event navigation, sparkline counts, events shown as upstream shows them), team,
 project and membership management (invitations by email or link, new users setting their password, messaging
 services with test messages, project deletion), accounts (signup with email confirmation, password reset,
-preferences, changing the password), and the database bootstrap/version check. bugsink-rs can take over ingestion and digestion of an upstream
+preferences, changing the password), the installation's admin (users, auth tokens, counts, settings, system
+warnings), and the database bootstrap/version check. bugsink-rs can take over ingestion and digestion of an upstream
 installation today; viewing and managing issues still needs upstream's UI (not at the same time, see below).
 
 ### Not yet ported (upstream behaviour missing)
@@ -85,23 +86,24 @@ In order of importance for production use (code-level gaps also have a `TODO(par
 1. **The UI's API.** `/api/v1` has login, logout and the current user; the project and global issue lists (tabs,
    sorts, search, sparklines) with issue actions; the issue pages (header, tags, history and comments, groupings,
    events with navigation, search and upstream's display shaping, hourly counts); teams, projects, members and
-   messaging services. Missing:
+   messaging services; accounts; the installation's admin. Missing:
    - applying uploaded sourcemaps to stack frames (frames only get the debug id hint) and the details tab's list of
      sourcemap images; the issue's Markdown export
-   - installation: users admin, auth tokens, settings and counts pages
+   - system warnings from upstream's phone-home ("remote messages")
 2. **Frontend**: not started (`frontend/` holds only the plan; framework not chosen).
 3. **Background jobs** besides digest, alerts, test messages, invitation, confirmation and password reset emails,
-   and the deletion of issues and projects: the welcome email (upstream's `send_welcome_email` command); phone-home.
+   and the deletion of issues and projects: phone-home.
 4. **Upstream's REST API** (`/api/canonical/0/`, with auth tokens) for scripts and integrations.
 5. **Ingest extras**: minidumps, sourcemap and debug-file uploads (`chunk-upload`, `artifactbundle/assemble`,
    `difs/assemble`) and applying them to stack traces, CSP reports (`/security/`), `VALIDATE_ON_DIGEST`, file-based
    event storage (eviction deletes such events' rows but not their files).
 6. **Settings**: `TIME_ZONE` (dates in alerts are UTC). Translations: upstream shows each user its pages and form
    messages in their language (English or Simplified Chinese); the API's messages are English.
-7. **Operations**: upstream's `/health/ready` (we have `/api/v1/health`) and its other management commands
+7. **Operations**: upstream's other management commands
    (`vacuum`'s files, old-events, ingest-dir and orphaned-issues parts, `delete_old_events`, `cleanup_*`,
-   `make_consistent`, `create_auth_token`, ...); we have `migrate`, `create-project`, `create-superuser`, `vacuum`
-   (deleted issues, eventless issue tags, tags), `serve` and `worker`.
+   `make_consistent`, `create_auth_token`, ...); we have `migrate`, `create-project`, `create-superuser`,
+   `send-welcome-email`, `vacuum` (deleted issues, eventless issue tags, tags), `serve` and `worker`. `/health/ready`
+   (upstream's readiness probe) and `/api/v1/health` (which also checks the database) are there.
 
 Known deliberate differences: an envelope whose event payload is not valid JSON gets a 400 at ingest (upstream returns
 200 and drops the event during digest). A search of only whitespace (or only terms the parser skips) matches
@@ -111,7 +113,8 @@ upstream's management views fail with a 500 or quietly do nothing, the API answe
 team whose projects have any data (409; upstream's database refuses it too), a project name whose slug would exceed
 50 characters, an unknown messaging service kind (400), changing your membership settings before accepting the
 invitation, re-sending an invitation without email set up or asking for its link with email set up (409),
-re-sending the confirmation for an address nobody signed up with (404).
+re-sending the confirmation for an address nobody signed up with (404). "Home" doesn't send you to a deleted project.
+The counts page counts our job queue where upstream counts snappea's, and its backlog warning is about our queue.
 
 ## Layout
 
@@ -136,6 +139,7 @@ bugsink-server/        the `bugsink` binary (src/main.rs: CLI, config, HTTP, in-
   src/projects.rs      teams and projects: lists, forms (Django's validation and messages), deleting
   src/memberships.rs   members, invitations (email or link), new users' tokens; who may do what
   src/alerts/setup.rs  messaging services: config forms (Django's URLField/URLValidator), test messages
+  src/installation.rs  users admin, auth tokens, counts, system warnings, home
   src/event_display.rs an event as upstream's event pages show it (stack traces, details, breadcrumbs)
   src/proxy.rs         the client's address behind a reverse proxy (X-Real-IP / X-Forwarded-For)
   src/vacuum.rs        `bugsink vacuum`: cleanup of eventless issue tags, unused tags, deleted issues

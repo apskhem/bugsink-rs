@@ -174,6 +174,49 @@ steps = [
     step(ALICE, "team_remove", team="Alpha Team", user=ALICE),  # removing yourself: leaving (last admin)
 ]
 
+ALL_CAPABILITIES = ["issues:read", "events:read", "issues:comment", "issues:triage", "issues:delete", "releases:read",
+                    "releases:create", "debug-files:upload", "projects:read", "projects:manage", "teams:read",
+                    "teams:manage"]
+INSTALLATION = [
+    step(DORA, "home"),
+    step(BOB, "home"),
+    step(ALICE, "home"),
+    step(ALICE, "users"),  # superusers only
+    step(ADMIN, "users"),
+    step(ADMIN, "user_edit", user=DORA, email="not-an-email"),
+    step(ADMIN, "user_edit", user=DORA, email=ALICE),  # taken
+    step(ADMIN, "user_edit", user=DORA, email="a!b@example.org"),  # not a valid username
+    step(ADMIN, "user_edit", user=DORA, email=" dora.new@example.org "),
+    step(ADMIN, "user_delete", user=ALICE),  # active: refused
+    step(ADMIN, "user_deactivate", user=NEW2),
+    step(ADMIN, "user_activate", user=NEW2),
+    step(ADMIN, "user_deactivate", user=CAROL),
+    step(ADMIN, "user_delete", user=CAROL),  # memberships go, comments and tokens lose their user
+    step(ALICE, "token_create", description="nothing", capabilities=[]),
+    step(ALICE, "token_create", description="", project="web-app", capabilities=["issues:read", "teams:read"]),
+    step(ALICE, "token_create", description="CI", project="web-app", capabilities=["issues:read", "events:read"]),
+    step(ALICE, "token_create", description="mine anyway", is_user_bound=False, capabilities=["projects:read"]),
+    step(ALICE, "token_create", description="theirs", project="elsewhere", capabilities=["issues:read"]),  # deleted
+    step(ADMIN, "token_create", description="service", is_user_bound=False, capabilities=ALL_CAPABILITIES),
+    step(ADMIN, "token_create", description="personal", is_user_bound=True, capabilities=["teams:manage"]),
+    step(ALICE, "token_list"),
+    step(ADMIN, "token_list"),
+    step(ALICE, "token_revoke", token="service"),  # not hers
+    step(ALICE, "token_revoke", token="CI"),
+    step(ALICE, "token_revoke", token="CI"),  # already
+    step(ADMIN, "token_list"),
+    step(ALICE, "counts"),
+    step(ADMIN, "counts"),
+    step(ALICE, "settings"),
+    step(ADMIN, "settings"),
+    step(ALICE, "system_warnings"),
+    step(ADMIN, "system_warnings"),
+    step(ALICE, "silence_email"),
+    step(ADMIN, "silence_email"),
+    step(ALICE, "system_warnings"),
+]
+steps += INSTALLATION
+
 with open("tools/parity/admin-steps.jsonl", "w") as f:
     for i, s in enumerate(steps):
         f.write(json.dumps({"n": i, **s}) + "\n")
