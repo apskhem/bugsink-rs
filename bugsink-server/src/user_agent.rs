@@ -8,6 +8,7 @@ use std::sync::{LazyLock, Mutex};
 
 use regex::{Regex, RegexBuilder};
 use serde::Deserialize;
+use serde_json::{Value, json};
 
 /// What `user_agents.parse` gives, as far as upstream uses it.
 #[derive(Clone, Debug, PartialEq)]
@@ -191,13 +192,8 @@ fn multi_replace(template: &str, m: &Match) -> Option<String> {
         }
         out.push(c);
     }
-    let out = py_strip(&out);
+    let out = crate::py::strip(&out);
     (!out.is_empty()).then(|| out.to_string())
-}
-
-/// Python's `str.strip()`.
-fn py_strip(s: &str) -> &str {
-    s.trim_matches(|c: char| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c))
 }
 
 /// `re.sub(r"\$1", group1, family_replacement)`: `group1` is used as a replacement template, so its backslash escapes
@@ -343,8 +339,41 @@ fn version_string(parts: &[Option<String>]) -> Result<String, ParseError> {
     Ok(out.join("."))
 }
 
+/// `get_contexts_enriched_with_ua`: the event's contexts, with `browser`, `os` and `device` derived from the request's
+/// User-Agent header where the SDK didn't send them. If that fails, the contexts as they are.
+pub fn contexts_enriched_with_user_agent(data: &Value) -> Value {
+    let mut contexts = data.get("contexts").filter(|c| c.is_object()).cloned().unwrap_or_else(|| json!({}));
+    let headers = data.get("request").filter(|r| r.is_object()).and_then(|r| r.get("headers")).filter(|h| h.is_object());
+    let ua = match headers.and_then(|h| h.get("User-Agent")) {
+        None | Some(Value::Null) => return contexts,
+        Some(Value::Array(values)) => match values.first() {
+            None => return contexts,
+            Some(first) => first, // assumed to be the only one
+        },
+        Some(ua) => ua,
+    };
+    let parsed = match ua.as_str().ok_or("TypeError: user agent is not a string").and_then(|ua| {
+        parse(ua).map_err(|e| e.0)
+    }) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            tracing::warn!(user_agent = %ua, error, "failed to enrich contexts with User-Agent info");
+            return contexts;
+        }
+    };
+    let contexts_map = contexts.as_object_mut().expect("object");
+    contexts_map
+        .entry("browser")
+        .or_insert_with(|| json!({"name": parsed.browser_family, "version": parsed.browser_version}));
+    contexts_map.entry("os").or_insert_with(|| json!({"name": parsed.os_family, "version": parsed.os_version}));
+    contexts_map.entry("device").or_insert_with(|| {
+        json!({"family": parsed.device_family, "model": parsed.device_model, "brand": parsed.device_brand})
+    });
+    contexts
+}
+
 /// `user_agents.parse(ua)`, with upstream's (and `ua-parser`'s) 200-entry cache.
-pub(crate) fn parse(ua: &str) -> Result<UserAgent, ParseError> {
+fn parse(ua: &str) -> Result<UserAgent, ParseError> {
     static CACHE: LazyLock<Mutex<HashMap<String, Result<UserAgent, &'static str>>>> =
         LazyLock::new(|| Mutex::new(HashMap::new()));
     if let Some(hit) = CACHE.lock().expect("cache").get(ua) {

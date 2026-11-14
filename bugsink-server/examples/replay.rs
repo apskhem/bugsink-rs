@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
         };
         let digested_at = step["digested_at"].as_str().unwrap().parse::<DateTime<Utc>>()?;
         match digest(&pool, job, digested_at, &settings.quotas).await {
-            Ok(_) => {}
+            Ok(()) => {}
             Err(DigestError::Drop(reason)) => println!("step {}: dropped: {reason}", step["n"]),
             Err(DigestError::Retry(e)) => anyhow::bail!("step {}: {e:#}", step["n"]),
         }

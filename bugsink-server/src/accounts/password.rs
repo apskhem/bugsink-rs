@@ -47,6 +47,18 @@ pub fn verify(password: &str, encoded: &str) -> Verified {
     Verified { matches, must_update: matches && (iterations != ITERATIONS || salt.len() < SALT_LEN) }
 }
 
+/// `make` off the async runtime.
+pub async fn hash(password: &str) -> Result<String, tokio::task::JoinError> {
+    let password = password.to_owned();
+    tokio::task::spawn_blocking(move || make(&password)).await
+}
+
+/// `verify` off the async runtime.
+pub async fn check(password: &str, encoded: &str) -> Result<Verified, tokio::task::JoinError> {
+    let (password, encoded) = (password.to_owned(), encoded.to_owned());
+    tokio::task::spawn_blocking(move || verify(&password, &encoded)).await
+}
+
 /// `make_password` with a fresh salt.
 pub fn make(password: &str) -> String {
     let mut rng = rand::rng();

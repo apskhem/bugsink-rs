@@ -137,19 +137,17 @@ pub async fn login(
         Some(row) => row,
         None => {
             // Like Django: hash anyway, so that response times don't tell which usernames exist.
-            tokio::task::spawn_blocking(move || password::make(&password)).await.map_err(ApiError::internal)?;
+            password::hash(&password).await.map_err(ApiError::internal)?;
             return Err(ApiError::BadRequest(INVALID_LOGIN.into()));
         }
     };
-    let (verified, password) = tokio::task::spawn_blocking(move || (password::verify(&password, &encoded), password))
-        .await
-        .map_err(ApiError::internal)?;
+    let verified = password::check(&password, &encoded).await.map_err(ApiError::internal)?;
     if !verified.matches || !is_active {
         return Err(ApiError::BadRequest(INVALID_LOGIN.into()));
     }
 
     let new_hash = if verified.must_update {
-        Some(tokio::task::spawn_blocking(move || password::make(&password)).await.map_err(ApiError::internal)?)
+        Some(password::hash(&password).await.map_err(ApiError::internal)?)
     } else {
         None
     };
@@ -220,7 +218,7 @@ pub async fn reset_password(
         return Err(ApiError::CsrfFailed);
     }
     let Some((verification_id, user_id, _, _)) =
-        crate::memberships::email_verification(&state.pool, &state.settings.users, &token).await?
+        self_service::email_verification(&state.pool, &state.settings.users, &token).await?
     else {
         return Err(ApiError::NotFound);
     };
@@ -240,7 +238,7 @@ pub async fn reset_password(
         return Err(ApiError::Invalid(std::collections::BTreeMap::from([("password", errors)])));
     }
     let password = req.password;
-    let encoded = tokio::task::spawn_blocking(move || password::make(&password)).await.map_err(ApiError::internal)?;
+    let encoded = password::hash(&password).await.map_err(ApiError::internal)?;
     let mut tx = state.pool.begin().await?;
     sqlx::query("UPDATE auth_user SET is_active = true, password = $2 WHERE id = $1")
         .bind(user_id)
@@ -261,20 +259,40 @@ pub async fn logout(State(state): State<ApiState>, current: CurrentUser) -> Resu
 pub async fn create_superuser(pool: &PgPool, email: &str, raw_password: &str) -> anyhow::Result<i64> {
     let username: String = email.nfkc().collect();
     let email = normalize_email(email);
-    let raw_password = raw_password.to_owned();
-    let encoded = tokio::task::spawn_blocking(move || password::make(&raw_password)).await?;
-    let id = sqlx::query_scalar(
+    let encoded = password::hash(raw_password).await?;
+    Ok(insert_user(pool, &encoded, &username, &email, true, true).await?)
+}
+
+/// An `auth_user` row, the model's defaults spelled out; its id. Superusers are staff too.
+pub(crate) async fn insert_user<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    password: &str,
+    username: &str,
+    email: &str,
+    is_active: bool,
+    is_superuser: bool,
+) -> sqlx::Result<i64> {
+    sqlx::query_scalar(
         "INSERT INTO auth_user (password, last_login, is_superuser, username, first_name, last_name, email, is_staff,
              is_active, date_joined, send_email_alerts, theme_preference, language)
-         VALUES ($1, NULL, true, $2, '', '', $3, true, true, now(), true, 'system', 'auto')
-         RETURNING id",
+         VALUES ($1, NULL, $2, $3, '', '', $4, $2, $5, now(), true, 'system', 'auto') RETURNING id",
     )
-    .bind(encoded)
+    .bind(password)
+    .bind(is_superuser)
     .bind(username)
     .bind(email)
-    .fetch_one(pool)
-    .await?;
-    Ok(id)
+    .bind(is_active)
+    .fetch_one(executor)
+    .await
+}
+
+/// `User.get_full_name()` (stripped) or, without one, the username.
+pub(crate) fn display_name(first_name: &str, last_name: &str, username: &str) -> String {
+    let full_name = format!("{first_name} {last_name}");
+    match crate::py::strip(&full_name) {
+        "" => username.to_owned(),
+        full_name => full_name.to_owned(),
+    }
 }
 
 /// Django's `BaseUserManager.normalize_email`: lowercase the domain part.

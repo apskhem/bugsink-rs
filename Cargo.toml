@@ -21,7 +21,6 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.6", features = ["derive", "env"] }
 fancy-regex = "0.14"
 flate2 = "1"
-futures = "0.3"
 hmac = "0.12"
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls", "ring", "webpki-roots", "hostname"] }
 rand = "0.9"
@@ -35,7 +34,7 @@ sqlx = { version = "0.9", default-features = false, features = ["postgres", "run
 subtle = "2"
 thiserror = "2"
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["cors", "fs", "trace", "limit"] }
+tower-http = { version = "0.6", features = ["cors", "fs", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-normalization = "0.1"

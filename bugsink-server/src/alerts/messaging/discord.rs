@@ -3,8 +3,7 @@
 use serde_json::{Value, json};
 
 use super::AlertMessage;
-use crate::alerts::webhook::{Failure, post_json};
-use crate::grouping::py::{json_dumps, truncatechars};
+use crate::py::truncatechars;
 
 /// `url_valid_according_to_discord`: Discord rejects embeds whose url has no dot in the hostname (e.g. localhost).
 fn url_valid_according_to_discord(url: &str) -> bool {
@@ -28,10 +27,11 @@ fn color(alert_reason: &str) -> u32 {
     }
 }
 
-fn payload(m: &AlertMessage<'_>) -> Value {
+/// `discord_backend_send_alert`.
+pub(super) fn payload(m: &AlertMessage<'_>) -> Value {
     let issue_url = m.issue.url(m.settings);
     let mut fields = vec![json!({"name": "Project", "value": m.issue.project_name, "inline": true})];
-    if let Some(unmute_reason) = m.alert.unmute_reason().filter(|r| !r.is_empty()) {
+    if let Some(unmute_reason) = m.alert.unmute_reason() {
         fields.push(json!({"name": "Unmute Reason", "value": unmute_reason, "inline": false}));
     }
     let mut embed = json!({
@@ -46,11 +46,6 @@ fn payload(m: &AlertMessage<'_>) -> Value {
     json!({"embeds": [embed]})
 }
 
-/// `discord_backend_send_alert`.
-pub(super) async fn send_alert(m: &AlertMessage<'_>) -> Result<(), Failure> {
-    let webhook_url = m.config_str("webhook_url")?;
-    post_json(&m.settings.webhooks, webhook_url, json_dumps(&payload(m))).await
-}
 
 /// `discord_backend_send_test_message`.
 pub(super) fn test_payload(project_name: &str, display_name: &str) -> Value {
@@ -69,6 +64,7 @@ pub(super) fn test_payload(project_name: &str, display_name: &str) -> Value {
 mod tests {
     use super::*;
     use crate::alerts::messaging::test_parts;
+    use crate::py::json_dumps;
 
     #[test]
     fn payload_like_upstream() {

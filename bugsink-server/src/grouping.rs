@@ -2,19 +2,18 @@
 //!
 //! Ported from upstream Bugsink 2.6.3 (`issues/utils.py`, `issues/grouping_mechanisms/`, and the vendored `sentry/`
 //! helpers). Grouping keys must match upstream byte-for-byte: they are looked up against keys upstream already
-//! stored, and a mismatch silently creates a duplicate issue. Hence the Python-semantics helpers in [`py`].
+//! stored, and a mismatch silently creates a duplicate issue. Hence the Python-semantics helpers in [`crate::py`].
 //!
 //! Where upstream would crash on malformed input (e.g. a non-string exception type combined with an empty value), we
 //! produce a reasonable result instead; those paths are not part of the parity contract.
 
 pub mod functions;
 pub mod parameterization;
-pub mod py;
 
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use py::{py_str, splitlines, strip, take_chars, trim, truthy};
+use crate::py::{py_str, splitlines, strip, take_chars, trim, truthy};
 
 pub const LOG_MESSAGE_TYPE: &str = "Log Message";
 
@@ -36,18 +35,11 @@ type Result<T> = std::result::Result<T, GroupingError>;
 
 // --- event shape helpers ----------------------------------------------------------------------------------------------
 
-enum Seg<'a> {
-    Key(&'a str),
-}
-
-/// Sentry's `get_path`: `None` if any step is missing, or if the final value is null.
-fn get_path<'v>(data: &'v Value, path: &[Seg]) -> Option<&'v Value> {
+/// Sentry's `get_path` (object keys only): `None` if any step is missing, or if the final value is null.
+pub(crate) fn get_path<'v>(data: &'v Value, keys: &[&str]) -> Option<&'v Value> {
     let mut cur = data;
-    for seg in path {
-        cur = match (seg, cur) {
-            (Seg::Key(k), Value::Object(o)) => o.get(*k)?,
-            _ => return None,
-        };
+    for key in keys {
+        cur = cur.as_object()?.get(*key)?;
     }
     (!cur.is_null()).then_some(cur)
 }
@@ -72,7 +64,7 @@ pub fn main_exception(data: &Value) -> Result<Option<&Value>> {
     if data.get("exception").and_then(Value::as_array).is_some_and(Vec::is_empty) {
         return Ok(None);
     }
-    let values = get_values(get_path(data, &[Seg::Key("exception")]), "exception")?;
+    let values = get_values(get_path(data, &["exception"]), "exception")?;
     Ok(values.and_then(|v| v.last().copied()).filter(|e| truthy(e)))
 }
 
@@ -84,20 +76,20 @@ fn as_frames(v: Option<&Value>) -> Option<&Vec<Value>> {
 /// only thread), falling back to the innermost frame.
 type FrameFilter<'f> = &'f dyn Fn(&Map<String, Value>) -> bool;
 
-pub fn crash_frame<'v>(data: &'v Value, filter: Option<FrameFilter>) -> Result<Option<&'v Map<String, Value>>> {
-    let values = get_values(get_path(data, &[Seg::Key("exception")]), "exception")?;
+fn crash_frame<'v>(data: &'v Value, filter: Option<FrameFilter>) -> Result<Option<&'v Map<String, Value>>> {
+    let values = get_values(get_path(data, &["exception"]), "exception")?;
     let from_exception = values
         .as_ref()
         .and_then(|v| v.last())
-        .and_then(|last| as_frames(get_path(last, &[Seg::Key("stacktrace"), Seg::Key("frames")])));
+        .and_then(|last| as_frames(get_path(last, &["stacktrace", "frames"])));
     let mut frames = from_exception
         .filter(|f| !f.is_empty())
-        .or_else(|| as_frames(get_path(data, &[Seg::Key("stacktrace"), Seg::Key("frames")])).filter(|f| !f.is_empty()));
+        .or_else(|| as_frames(get_path(data, &["stacktrace", "frames"])).filter(|f| !f.is_empty()));
 
     if frames.is_none() {
-        let threads = get_values(get_path(data, &[Seg::Key("threads")]), "threads")?;
+        let threads = get_values(get_path(data, &["threads"]), "threads")?;
         if let Some(threads) = threads.filter(|t| t.len() == 1) {
-            frames = as_frames(get_path(threads[0], &[Seg::Key("stacktrace"), Seg::Key("frames")]));
+            frames = as_frames(get_path(threads[0], &["stacktrace", "frames"]));
         }
     }
 
@@ -149,7 +141,7 @@ fn type_and_value_raw(data: &Value, variant: Variant) -> Result<(Value, Value)> 
         Variant::Grouping => [["logentry", "message"], ["logentry", "formatted"], ["message", "message"], ["message", "formatted"]],
         Variant::Display => [["logentry", "formatted"], ["logentry", "message"], ["message", "formatted"], ["message", "message"]],
     };
-    let first_truthy = paths.iter().find_map(|[a, b]| get_path(data, &[Seg::Key(a), Seg::Key(b)]).filter(|v| truthy(v)));
+    let first_truthy = paths.iter().find_map(|[a, b]| get_path(data, &[a, b]).filter(|v| truthy(v)));
     let mut message = first_truthy.map(|v| strip(&py_str(v)).to_string()).unwrap_or_default();
     if let (true, Some(Value::String(s))) = (message.is_empty(), data.get("message")) {
         message = s.clone();
@@ -167,9 +159,9 @@ fn exception_type_and_value(data: &Value) -> Result<(Value, Value)> {
     let Some(exception) = main_exception(data)? else {
         return Ok(unknown());
     };
-    let value = trim(get_path(exception, &[Seg::Key("value")]).unwrap_or(&Value::String(String::new())), 1024);
+    let value = trim(get_path(exception, &["value"]).unwrap_or(&Value::String(String::new())), 1024);
 
-    if get_path(exception, &[Seg::Key("mechanism"), Seg::Key("synthetic")]).is_some_and(truthy) {
+    if get_path(exception, &["mechanism", "synthetic"]).is_some_and(truthy) {
         let (_, function) = crash_location(data)?;
         return Ok(match function.filter(truthy) {
             Some(f) => (f, Value::String(String::new())),
@@ -177,7 +169,7 @@ fn exception_type_and_value(data: &Value) -> Result<(Value, Value)> {
         });
     }
 
-    let ty = trim(get_path(exception, &[Seg::Key("type")]).unwrap_or(&Value::String("Error".into())), 128);
+    let ty = trim(get_path(exception, &["type"]).unwrap_or(&Value::String("Error".into())), 128);
     Ok((ty, value))
 }
 

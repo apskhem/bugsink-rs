@@ -6,7 +6,7 @@ use std::sync::LazyLock;
 use regex::{NoExpand, Regex};
 use serde_json::{Map, Value};
 
-use crate::grouping::py::{is_space, rstrip, strip, truthy};
+use crate::py::{is_space, rstrip, strip, truthy};
 
 static WINDECL_HASH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^@?(.*?)@[0-9]+$").unwrap());
 static RUST_HASH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"::h[a-z0-9]{16}$").unwrap());
@@ -36,7 +36,7 @@ pub fn function_name_for_frame(frame: &Map<String, Value>, platform: Option<&Val
 }
 
 /// `trim_function_name` for native platforms.
-pub fn trim_function_name(function: &str) -> String {
+fn trim_function_name(function: &str) -> String {
     if function == "<redacted>" || function == "<unknown>" {
         return function.to_string();
     }

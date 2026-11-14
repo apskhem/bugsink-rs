@@ -32,60 +32,41 @@ pub async fn run(pool: &PgPool, what: What) -> anyhow::Result<()> {
     }
     if what.eventless_issuetags {
         tracing::info!("vacuuming eventless issue tags");
-        let mut min_id = 0;
-        while let Some(next) = eventless_issuetags_batch(pool, min_id).await? {
-            min_id = next;
-        }
+        in_batches(async |min_id| eventless_issuetags_batch(pool, min_id).await).await?;
     }
     if what.tags {
         tracing::info!("vacuuming tags");
-        let mut min_id = 0;
-        while let Some(next) = tagvalues_batch(pool, min_id).await? {
-            min_id = next;
-        }
-        let mut min_id = 0;
-        while let Some(next) = tagkeys_batch(pool, min_id).await? {
-            min_id = next;
-        }
+        in_batches(async |min_id| tags_batch(pool, TAGVALUES_BATCH, min_id).await).await?;
+        in_batches(async |min_id| tags_batch(pool, TAGKEYS_BATCH, min_id).await).await?;
     }
     Ok(())
 }
 
-/// `vacuum_tagvalues_batch`: the next batch of tag values by id; deletes the unused ones and returns the last id
-/// checked (None when there were none left).
-async fn tagvalues_batch(pool: &PgPool, min_id: i64) -> sqlx::Result<Option<i64>> {
-    let mut tx = pool.begin().await?;
-    let last: Option<i64> = sqlx::query_scalar(
-        "WITH batch AS (SELECT id FROM tags_tagvalue WHERE id > $1 ORDER BY id LIMIT $2),
-              unused AS (DELETE FROM tags_tagvalue v USING batch b
-                         WHERE v.id = b.id
-                           AND NOT EXISTS (SELECT 1 FROM tags_eventtag WHERE value_id = b.id)
-                           AND NOT EXISTS (SELECT 1 FROM tags_issuetag WHERE value_id = b.id))
-         SELECT MAX(id) FROM batch",
-    )
-    .bind(min_id)
-    .bind(TAGS_BATCH_SIZE)
-    .fetch_one(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(last)
+/// Runs `batch` over the ids from the start: each returns the last id it checked, None when there were none left.
+async fn in_batches(batch: impl AsyncFn(i64) -> sqlx::Result<Option<i64>>) -> sqlx::Result<()> {
+    let mut min_id = 0;
+    while let Some(next) = batch(min_id).await? {
+        min_id = next;
+    }
+    Ok(())
 }
 
-/// `vacuum_tagkeys_batch`: as `tagvalues_batch`, for tag keys without values.
-async fn tagkeys_batch(pool: &PgPool, min_id: i64) -> sqlx::Result<Option<i64>> {
-    let mut tx = pool.begin().await?;
-    let last: Option<i64> = sqlx::query_scalar(
-        "WITH batch AS (SELECT id FROM tags_tagkey WHERE id > $1 ORDER BY id LIMIT $2),
-              unused AS (DELETE FROM tags_tagkey k USING batch b
-                         WHERE k.id = b.id AND NOT EXISTS (SELECT 1 FROM tags_tagvalue WHERE key_id = b.id))
-         SELECT MAX(id) FROM batch",
-    )
-    .bind(min_id)
-    .bind(TAGS_BATCH_SIZE)
-    .fetch_one(&mut *tx)
-    .await?;
-    tx.commit().await?;
-    Ok(last)
+/// `vacuum_tagvalues_batch`: deletes the batch's tag values no event or issue tag uses.
+const TAGVALUES_BATCH: &str = "WITH batch AS (SELECT id FROM tags_tagvalue WHERE id > $1 ORDER BY id LIMIT $2),
+         unused AS (DELETE FROM tags_tagvalue v USING batch b
+                    WHERE v.id = b.id
+                      AND NOT EXISTS (SELECT 1 FROM tags_eventtag WHERE value_id = b.id)
+                      AND NOT EXISTS (SELECT 1 FROM tags_issuetag WHERE value_id = b.id))
+    SELECT MAX(id) FROM batch";
+
+/// `vacuum_tagkeys_batch`: deletes the batch's tag keys without values.
+const TAGKEYS_BATCH: &str = "WITH batch AS (SELECT id FROM tags_tagkey WHERE id > $1 ORDER BY id LIMIT $2),
+         unused AS (DELETE FROM tags_tagkey k USING batch b
+                    WHERE k.id = b.id AND NOT EXISTS (SELECT 1 FROM tags_tagvalue WHERE key_id = b.id))
+    SELECT MAX(id) FROM batch";
+
+async fn tags_batch(pool: &PgPool, sql: &'static str, min_id: i64) -> sqlx::Result<Option<i64>> {
+    sqlx::query_scalar(sql).bind(min_id).bind(TAGS_BATCH_SIZE).fetch_one(pool).await
 }
 
 /// `vacuum_eventless_issuetags_batch`: deletes the batch's issue tags that no event tag of the same issue and value

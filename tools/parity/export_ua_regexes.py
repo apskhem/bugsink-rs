@@ -1,7 +1,7 @@
 # Runs inside the official Bugsink image: prints the User-Agent regexes upstream parses with (ua-parser-builtins, via
-# ua-parser's legacy API), as bugsink-server/src/digest/ua_regexes.json. Usage:
+# ua-parser's legacy API), as bugsink-server/src/ua_regexes.json. Usage:
 #   docker run --rm -i --entrypoint python bugsink/bugsink:2.6.3 - < tools/parity/export_ua_regexes.py \
-#       > bugsink-server/src/digest/ua_regexes.json
+#       > bugsink-server/src/ua_regexes.json
 import importlib.metadata
 import json
 import re

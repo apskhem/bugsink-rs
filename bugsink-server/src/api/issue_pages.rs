@@ -6,7 +6,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use axum::routing::{get, patch, post};
 use bugsink_db::TurningPointKind;
-use bugsink_db::models::{Event, IssueSummary};
+use super::models::{Event, IssueSummary};
 use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::json;

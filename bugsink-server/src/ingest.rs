@@ -95,15 +95,12 @@ impl From<sqlx::Error> for IngestError {
 
 impl IntoResponse for IngestError {
     fn into_response(self) -> Response {
-        if let Self::OverQuota = self {
-            return StatusCode::TOO_MANY_REQUESTS.into_response(); // empty body, as upstream
-        }
         let status = match &self {
             Self::MissingKey | Self::Forbidden => StatusCode::FORBIDDEN,
             Self::Decode(encoding::DecodeError::TooLarge(_)) => StatusCode::PAYLOAD_TOO_LARGE,
             Self::Decode(_) | Self::Envelope(_) | Self::EventJson(_) | Self::Parse(_) => StatusCode::BAD_REQUEST,
             Self::SpoofedForwardedFor(_) => StatusCode::BAD_REQUEST,
-            Self::OverQuota => StatusCode::TOO_MANY_REQUESTS,
+            Self::OverQuota => return StatusCode::TOO_MANY_REQUESTS.into_response(), // empty body, as upstream
             Self::Internal(e) => {
                 tracing::error!(error = %e, "ingest failed");
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -181,7 +178,7 @@ impl Request {
             remote_addr: self.remote_addr.clone(),
             event,
         };
-        crate::tasks::enqueue(pool, crate::digest::JOB_KIND, &job).await?;
+        crate::tasks::enqueue(pool, &job).await?;
         Ok(())
     }
 }

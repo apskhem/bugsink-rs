@@ -2,63 +2,22 @@
 //! (with their mine/teams/other tabs), creating, editing (with the forms' validation and messages) and deleting
 //! (projects in the background: `delete_project_deps`). Memberships: `crate::memberships`.
 
-use std::collections::BTreeMap;
-
-use bugsink_db::{PgPool, PROJECT_VISIBILITY_TEAM_MEMBERS};
+use bugsink_db::{PROJECT_VISIBILITY_TEAM_MEMBERS, PgPool, Postgres, Transaction};
 use chrono::{DateTime, TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 use crate::accounts::User;
-use crate::grouping::py::strip;
-use crate::memberships::{self, Group, ROLE_ADMIN, ROLE_MEMBER, UserSettings};
+use crate::forms::{FieldErrors, REQUIRED, char_field, choice_field, error};
+use crate::memberships::{self, Group, ROLE_ADMIN, UserSettings};
 use crate::quota::QuotaSettings;
 use crate::tasks;
-
-/// Form errors by field (`__all__` for the form), with Django's messages.
-pub type FieldErrors = BTreeMap<&'static str, Vec<String>>;
-
-const REQUIRED: &str = "This field is required.";
-
-fn error(field: &'static str, message: impl Into<String>) -> FieldErrors {
-    BTreeMap::from([(field, vec![message.into()])])
-}
-
-/// A `CharField(max_length)` of a `ModelForm`: stripped, required, at most `max` characters.
-fn char_field(errors: &mut FieldErrors, field: &'static str, value: Option<&str>, max: usize) -> String {
-    let value = strip(value.unwrap_or("")).to_owned();
-    let len = value.chars().count();
-    if value.is_empty() {
-        errors.entry(field).or_default().push(REQUIRED.into());
-    } else if len > max {
-        let message = format!("Ensure this value has at most {max} characters (it has {len}).");
-        errors.entry(field).or_default().push(message);
-    }
-    value
-}
-
-/// A `TypedChoiceField` of integers.
-fn choice_field(errors: &mut FieldErrors, field: &'static str, value: Option<i64>, choices: &[i64]) -> i64 {
-    match value {
-        None => {
-            errors.entry(field).or_default().push(REQUIRED.into());
-            0
-        }
-        Some(v) if !choices.contains(&v) => {
-            let message = format!("Select a valid choice. {v} is not one of the available choices.");
-            errors.entry(field).or_default().push(message);
-            v
-        }
-        Some(v) => v,
-    }
-}
 
 // --- teams ------------------------------------------------------------------------------------------------------
 
 /// `TeamVisibility`: joinable, discoverable, hidden.
-pub const TEAM_VISIBILITIES: [i64; 3] = [1, 10, 99];
+const TEAM_VISIBILITIES: [i64; 3] = [1, 10, 99];
 const TEAM_HIDDEN: i32 = 99;
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -190,49 +149,10 @@ pub async fn delete_team(pool: &PgPool, id: Uuid) -> sqlx::Result<bool> {
     }
 }
 
-/// `team_list` "join": joinable teams (or any, for superusers); false when you're already in it.
-pub async fn join_team(pool: &PgPool, user: &User, id: Uuid) -> sqlx::Result<Option<bool>> {
-    let Some(visibility): Option<i32> =
-        sqlx::query_scalar("SELECT visibility FROM teams_team WHERE id = $1").bind(id).fetch_optional(pool).await?
-    else {
-        return Ok(None);
-    };
-    if visibility > 1 && !user.is_superuser {
-        return Ok(Some(false));
-    }
-    Ok(Some(memberships::add_member(pool, Group::Team(id), user.id, ROLE_MEMBER, true).await?))
-}
-
-/// `_leave_team`: the last accepted admin can't leave. None: no membership (404).
-pub async fn leave_team(pool: &PgPool, user_id: i64, id: Uuid, accepted_only: bool) -> sqlx::Result<Option<bool>> {
-    let Some((role, accepted)) = memberships::membership(pool, Group::Team(id), user_id).await? else {
-        return Ok(None);
-    };
-    if accepted_only && !accepted {
-        return Ok(None);
-    }
-    if accepted && role == ROLE_ADMIN {
-        let other_admins: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM teams_teammembership
-                            WHERE team_id = $1 AND role = $2 AND accepted AND user_id <> $3)",
-        )
-        .bind(id)
-        .bind(ROLE_ADMIN)
-        .bind(user_id)
-        .fetch_one(pool)
-        .await?;
-        if !other_admins {
-            return Ok(Some(false));
-        }
-    }
-    memberships::remove_member(pool, Group::Team(id), user_id).await?;
-    Ok(Some(true))
-}
-
 // --- projects ---------------------------------------------------------------------------------------------------
 
 /// `ProjectVisibility`: joinable, discoverable, team members.
-pub const PROJECT_VISIBILITIES: [i64; 3] = [1, 10, 99];
+const PROJECT_VISIBILITIES: [i64; 3] = [1, 10, 99];
 const GROUPING_MECHANISMS: [&str; 2] = [crate::grouping::BUGSINK_V1, crate::grouping::BUGSINK_V2];
 const OPEN_ISSUE_COUNT_SHOW_THRESHOLD: i32 = 25_000;
 const GROUPING_TRANSITION_PERIOD: TimeDelta = TimeDelta::days(30);
@@ -438,7 +358,8 @@ async fn clean_project(
             v
         }
         Some(v) => {
-            if let Err(message) = retention_within_budget(pool, quotas, v, instance).await? {
+            let (id, grace) = instance.map_or((None, 0), |(id, _, current)| (Some(id), current));
+            if let Err(message) = retention_within_budget(pool, quotas, v, id, Some(grace)).await? {
                 errors.entry("retention_max_event_count").or_default().push(message);
             }
             v
@@ -473,17 +394,19 @@ async fn clean_project(
     Ok(Ok(CleanProject { team_id, name, visibility, retention_max_event_count: retention, grouping_mechanism }))
 }
 
-/// `clean_retention_max_event_count`: the caps, with grace for what the project already has (lowering is always
-/// allowed).
-async fn retention_within_budget(
+/// The retention caps for a project (None: a new one): the form's `clean_retention_max_event_count` with grace for
+/// what the project already has (so lowering is always allowed), or the REST API's
+/// `validate_retention_max_event_count` without.
+pub(crate) async fn retention_within_budget(
     pool: &PgPool,
     quotas: &QuotaSettings,
     value: i64,
-    instance: Option<(i64, Option<Uuid>, i64)>,
+    project_id: Option<i64>,
+    grace: Option<i64>,
 ) -> sqlx::Result<Result<(), String>> {
-    let grace = instance.map(|(_, _, current)| current).unwrap_or(0);
+    let with_grace = |limit: i64| grace.map_or(limit, |grace| limit.max(grace));
     if let Some(cap) = quotas.max_retention_per_project_event_count.0
-        && value > cap.max(grace)
+        && value > with_grace(cap)
     {
         return Ok(Err(format!("The maximum allowed retention per project is {cap} events.")));
     }
@@ -492,10 +415,10 @@ async fn retention_within_budget(
             "SELECT coalesce(SUM(retention_max_event_count), 0)::bigint FROM projects_project
              WHERE id IS DISTINCT FROM $1",
         )
-        .bind(instance.map(|(id, _, _)| id))
+        .bind(project_id)
         .fetch_one(pool)
         .await?;
-        let budget_left = (total - others).max(0).max(grace);
+        let budget_left = with_grace((total - others).max(0));
         if value > budget_left {
             return Ok(Err(format!(
                 "The maximum allowed retention for this project is {budget_left} events (based on the \
@@ -507,7 +430,7 @@ async fn retention_within_budget(
 }
 
 /// Django's `slugify`: ASCII (accents dropped), lower case, word characters, single dashes.
-pub fn slugify(value: &str) -> String {
+fn slugify(value: &str) -> String {
     let ascii: String = value.nfkd().filter(char::is_ascii).collect::<String>().to_lowercase();
     let kept: String =
         ascii.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-' || is_ascii_space(*c)).collect();
@@ -530,6 +453,45 @@ pub fn slugify(value: &str) -> String {
 /// Python's `\s` on ASCII text: space, \t\n\v\f\r and the separators \x1c-\x1f.
 fn is_ascii_space(c: char) -> bool {
     matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r' | '\x1c'..='\x1f')
+}
+
+/// What a new project is created with; everything else starts as upstream's model defaults.
+pub struct NewProject<'a> {
+    pub team_id: Option<Uuid>,
+    pub name: &'a str,
+    pub slug: &'a str,
+    /// On new issues, regressions and unmutes.
+    pub alerts: [bool; 3],
+    pub visibility: i32,
+    pub retention_max_event_count: i32,
+    pub grouping_mechanism: &'a str,
+}
+
+/// `Project.objects.create`: (id, sentry_key). Django model defaults are not database defaults: every NOT NULL column
+/// is spelled out, with upstream's values.
+pub async fn insert_project(tx: &mut Transaction<'_, Postgres>, p: &NewProject<'_>) -> sqlx::Result<(i64, Uuid)> {
+    let [new_issue, regression, unmute] = p.alerts;
+    sqlx::query_as(
+        "INSERT INTO projects_project (
+             team_id, name, slug, sentry_key, is_deleted, has_releases, issue_count, digested_event_count,
+             stored_event_count, alert_on_new_issue, alert_on_regression, alert_on_unmute, visibility,
+             quota_exceeded_until, quota_exceeded_reason, next_quota_check, retention_max_event_count,
+             grouping_mechanism, previous_grouping_mechanism, grouping_mechanism_upgraded_at)
+         VALUES ($1, $2, $3, gen_random_uuid(), false, false, 0, 0, 0, $4, $5, $6, $7, NULL, 'null', 0, $8, $9, NULL,
+                 NULL)
+         RETURNING id, sentry_key",
+    )
+    .bind(p.team_id)
+    .bind(p.name)
+    .bind(p.slug)
+    .bind(new_issue)
+    .bind(regression)
+    .bind(unmute)
+    .bind(p.visibility)
+    .bind(p.retention_max_event_count)
+    .bind(p.grouping_mechanism)
+    .fetch_one(&mut **tx)
+    .await
 }
 
 /// `Project.save`'s slug: the name's, or with -0, -1, ... appended while taken by a slug starting with it.
@@ -569,25 +531,16 @@ pub async fn create_project(
     if slug.chars().count() > 50 {
         return Ok(Err(error("name", "This name makes a slug longer than 50 characters.")));
     }
-    // Django model defaults are not database defaults: every NOT NULL column is spelled out, with upstream's values.
-    let id: i64 = sqlx::query_scalar(
-        "INSERT INTO projects_project (
-             team_id, name, slug, sentry_key, is_deleted, has_releases, issue_count, digested_event_count,
-             stored_event_count, alert_on_new_issue, alert_on_regression, alert_on_unmute, visibility,
-             quota_exceeded_until, quota_exceeded_reason, next_quota_check, retention_max_event_count,
-             grouping_mechanism, previous_grouping_mechanism, grouping_mechanism_upgraded_at)
-         VALUES ($1, $2, $3, gen_random_uuid(), false, false, 0, 0, 0, true, true, true, $4, NULL, 'null', 0, $5, $6,
-                 NULL, NULL)
-         RETURNING id",
-    )
-    .bind(p.team_id)
-    .bind(&p.name)
-    .bind(&slug)
-    .bind(p.visibility as i32)
-    .bind(p.retention_max_event_count as i32)
-    .bind(&p.grouping_mechanism)
-    .fetch_one(&mut *tx)
-    .await?;
+    let new = NewProject {
+        team_id: p.team_id,
+        name: &p.name,
+        slug: &slug,
+        alerts: [true; 3],
+        visibility: p.visibility as i32,
+        retention_max_event_count: p.retention_max_event_count as i32,
+        grouping_mechanism: &p.grouping_mechanism,
+    };
+    let (id, _) = insert_project(&mut tx, &new).await?;
     memberships::add_member(&mut *tx, Group::Project(id), user.id, ROLE_ADMIN, true).await?;
     tx.commit().await?;
     Ok(Ok(id))
@@ -712,41 +665,22 @@ pub async fn edit_project(
     Ok(Ok(()))
 }
 
-/// `project_list` "join": through your team or when open to anyone (any, for superusers). None: no such project;
-/// false: not joinable or already a member.
-pub async fn join_project(pool: &PgPool, user: &User, id: i64) -> sqlx::Result<Option<bool>> {
-    let Some(joinable): Option<bool> = sqlx::query_scalar(
-        "SELECT p.visibility <= 1 OR EXISTS (SELECT 1 FROM teams_teammembership t
-                                             WHERE t.team_id = p.team_id AND t.user_id = $2 AND t.accepted)
-         FROM projects_project p WHERE p.id = $1",
-    )
-    .bind(id)
-    .bind(user.id)
-    .fetch_optional(pool)
-    .await?
-    else {
-        return Ok(None);
-    };
-    if !joinable && !user.is_superuser {
-        return Ok(Some(false));
-    }
-    Ok(Some(memberships::add_member(pool, Group::Project(id), user.id, ROLE_MEMBER, true).await?))
-}
-
 /// `Project.delete_deferred`: gone from every list at once; its rows are deleted in the background.
 pub async fn delete_project(pool: &PgPool, id: i64) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
     sqlx::query("UPDATE projects_project SET is_deleted = true WHERE id = $1").bind(id).execute(&mut *tx).await?;
-    tasks::enqueue(&mut *tx, DELETE_JOB_KIND, &DeleteProjectDepsJob { project_id: id }).await?;
+    tasks::enqueue(&mut *tx, &DeleteProjectDepsJob { project_id: id }).await?;
     tx.commit().await?;
     Ok(())
 }
 
-pub const DELETE_JOB_KIND: &str = "delete_project_deps";
-
 #[derive(Serialize, Deserialize)]
 pub struct DeleteProjectDepsJob {
     pub project_id: i64,
+}
+
+impl tasks::Job for DeleteProjectDepsJob {
+    const KIND: &str = "delete_project_deps";
 }
 
 /// `get_model_topography_with_project_override`'s order: what refers to other rows first.
@@ -771,8 +705,7 @@ const PROJECT_DEPENDENTS: [&str; 17] = [
 ];
 
 /// `delete_project_deps`: 500 rows per job (re-enqueued until done), then the project itself.
-pub async fn handle_delete_job(pool: PgPool, payload: Value) -> anyhow::Result<()> {
-    let job: DeleteProjectDepsJob = serde_json::from_value(payload)?;
+pub async fn handle_delete_job(pool: PgPool, job: DeleteProjectDepsJob) -> anyhow::Result<()> {
     const BUDGET: i64 = 500;
     let mut tx = pool.begin().await?;
     let mut deleted = 0;
@@ -791,7 +724,7 @@ pub async fn handle_delete_job(pool: PgPool, payload: Value) -> anyhow::Result<(
         }
     }
     if deleted >= BUDGET {
-        tasks::enqueue(&mut *tx, DELETE_JOB_KIND, &job).await?;
+        tasks::enqueue(&mut *tx, &job).await?;
     } else {
         sqlx::query("DELETE FROM projects_project WHERE id = $1").bind(job.project_id).execute(&mut *tx).await?;
     }

@@ -76,7 +76,7 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
   fails (a 500; we render what we can) are counted, not compared.
 - `user_agents.sh`: the browser/OS/device contexts (and so tags) derived from a request's User-Agent header, for the
   ~30,000 user agents in uap-core's test suite plus malformed inputs, compared with upstream's own function. The
-  parser data (`bugsink-server/src/digest/ua_regexes.json`) is exported from the upstream image.
+  parser data (`bugsink-server/src/ua_regexes.json`) is exported from the upstream image.
 
 ### Status
 
@@ -157,20 +157,26 @@ bugsink-db/            Postgres pool; upstream 2.6.3 schema snapshot (upstream/)
 bugsink-server/        the `bugsink` binary (src/main.rs: CLI, config, HTTP, in-process workers, static files) on a
                        library with one module per concern:
   src/protocol         Sentry wire formats: auth, content-encoding, envelopes, timestamps (pure)
-  src/grouping         upstream-exact grouping keys, titles, denormalized fields; Python string semantics (pure)
+  src/py.rs            Python and Django semantics everything else relies on: str(), repr(), json.dumps, strip,
+                       truncatechars, isoformat, int(), UUID() (pure)
+  src/grouping         upstream-exact grouping keys, titles, denormalized fields (pure)
   src/tasks.rs         job queue on Postgres (SKIP LOCKED + LISTEN/NOTIFY), worker loop; replaces upstream's snappea
-  src/digest           upstream-exact digest: issues, groupings, events, releases, regressions, unmutes, tags,
-                       counts, eviction (retention.rs)
+  src/digest           upstream-exact digest: issues, groupings, events, regressions, unmutes, tags, counts,
+                       eviction (retention.rs)
+  src/releases.rs      releases: created on first sight, ordered (semver or by date), "resolved by next release"
+  src/user_agent.rs    browser/OS/device from the User-Agent header, with upstream's parser data (ua_regexes.json)
   src/ingest.rs        POST /api/{project_id}/envelope/ and /store/ (auth, quota 429s, decode, enqueue)
   src/event_counter.rs counting events over rolling windows (for quotas and volume-based unmute)
   src/quota.rs         installation/project quotas (counted in digest, enforced in both)
-  src/alerts           alert emails (upstream's templates) and messaging services (Slack, Discord, ...), as jobs
+  src/alerts           alert emails and messaging services (Slack, Discord, ...), as jobs
+  src/mail             sending email: SMTP settings, quotas, upstream's templates (the HTML ones share a layout)
   src/api.rs           /api/v1/... JSON API for the frontend, with upstream's access rules (api/: issue pages)
   src/issues           issue actions (resolve, mute, delete, ...; single and bulk), deleting issues' rows, and what
                        the issue pages show (pages.rs)
   src/search.rs        issue and event search: query parser, tag and text matching
-  src/projects.rs      teams and projects: lists, forms (Django's validation and messages), deleting
-  src/memberships.rs   members, invitations (email or link), new users' tokens; who may do what
+  src/projects.rs      teams and projects: lists, forms, deleting
+  src/forms.rs         Django's form validation: errors by field, its messages
+  src/memberships.rs   members, invitations (email or link), joining and leaving; who may do what
   src/alerts/setup.rs  messaging services: config forms (Django's URLField/URLValidator), test messages
   src/installation.rs  users admin, auth tokens, counts, system warnings, home
   src/rest.rs          /api/canonical/0/...: upstream's REST API (bearer auth tokens, DRF's errors, fields and cursor

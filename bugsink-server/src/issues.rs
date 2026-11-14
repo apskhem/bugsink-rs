@@ -14,10 +14,11 @@ pub mod pages;
 use bugsink_db::{PgPool, Postgres, Transaction, TurningPointKind};
 use chrono::{DateTime, SubsecRound, Utc};
 use serde_json::json;
+use sqlx::PgExecutor;
 use uuid::Uuid;
 
 use crate::event_counter::Period;
-use crate::grouping::py::{isoformat, json_dumps};
+use crate::py::{isoformat, json_dumps};
 
 /// An action as upstream's forms post it, e.g. `resolve`, `resolved_release:1.2.0`, `mute_for:day,1,None`,
 /// `mute_until:hour,24,5`.
@@ -173,6 +174,44 @@ impl IssueState {
     }
 }
 
+/// `Issue.friendly_id`: the project's slug in capitals, then the issue's number in the project.
+pub fn friendly_id(project_slug: &str, digest_order: i32) -> String {
+    format!("{}-{digest_order}", project_slug.to_uppercase())
+}
+
+/// An `issues_turningpoint` row to insert.
+pub(crate) struct NewTurningPoint<'a> {
+    pub project_id: i64,
+    pub issue_id: Uuid,
+    pub kind: TurningPointKind,
+    pub timestamp: DateTime<Utc>,
+    pub triggering_event_id: Option<Uuid>,
+    pub user_id: Option<i64>,
+    pub metadata: &'a str,
+    pub comment: &'a str,
+}
+
+impl NewTurningPoint<'_> {
+    /// Inserts the row; its id.
+    pub(crate) async fn insert<'e>(&self, executor: impl PgExecutor<'e>) -> sqlx::Result<i64> {
+        sqlx::query_scalar(
+            "INSERT INTO issues_turningpoint (project_id, issue_id, triggering_event_id, user_id, timestamp, kind,
+                 metadata, comment)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
+        )
+        .bind(self.project_id)
+        .bind(self.issue_id)
+        .bind(self.triggering_event_id)
+        .bind(self.user_id)
+        .bind(self.timestamp)
+        .bind(self.kind as i32)
+        .bind(self.metadata)
+        .bind(self.comment)
+        .fetch_one(executor)
+        .await
+    }
+}
+
 /// `_handle_post` on an issue's page: applies the action if it is valid for the issue's current state (returns false
 /// and changes nothing otherwise, like upstream, which then just shows the page again). The issue must exist and not
 /// be deleted.
@@ -204,19 +243,17 @@ pub async fn apply_to_issue(
     }
 
     if let Some((kind, metadata)) = action.turning_point(now) {
-        sqlx::query(
-            "INSERT INTO issues_turningpoint (project_id, issue_id, triggering_event_id, user_id, timestamp, kind,
-                 metadata, comment)
-             VALUES ($1, $2, NULL, $3, $4, $5, $6, '')",
-        )
-        .bind(issue.project_id)
-        .bind(issue_id)
-        .bind(user_id)
-        .bind(now)
-        .bind(kind as i32)
-        .bind(metadata)
-        .execute(&mut *tx)
-        .await?;
+        let turning_point = NewTurningPoint {
+            project_id: issue.project_id,
+            issue_id,
+            kind,
+            timestamp: now,
+            triggering_event_id: None,
+            user_id,
+            metadata: &metadata,
+            comment: "",
+        };
+        turning_point.insert(&mut *tx).await?;
     }
 
     match action {

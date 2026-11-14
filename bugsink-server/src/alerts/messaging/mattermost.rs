@@ -3,19 +3,15 @@
 use serde_json::{Value, json};
 
 use super::AlertMessage;
-use crate::alerts::webhook::{Failure, post_json};
-use crate::grouping::py::{json_dumps, truncatechars, truthy};
+use super::slack::safe_markdown;
+use crate::py::{truncatechars, truthy};
 
-/// The same escaping as Slack's.
-fn safe_markdown(text: &str) -> String {
-    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('*', "\\*").replace('_', "\\_")
-}
-
-fn payload(m: &AlertMessage<'_>) -> Value {
+/// `mattermost_backend_send_alert`.
+pub(super) fn payload(m: &AlertMessage<'_>) -> Value {
     let issue_url = m.issue.url(m.settings);
     let title = safe_markdown(&truncatechars(&m.issue.title.replace('|', ""), 200));
     let mut text = format!("<{issue_url}|{title}>");
-    if let Some(unmute_reason) = m.alert.unmute_reason().filter(|r| !r.is_empty()) {
+    if let Some(unmute_reason) = m.alert.unmute_reason() {
         text += &format!("\n\n{}", safe_markdown(unmute_reason));
     }
     let mut data = json!({
@@ -33,11 +29,6 @@ fn payload(m: &AlertMessage<'_>) -> Value {
     data
 }
 
-/// `mattermost_backend_send_alert`.
-pub(super) async fn send_alert(m: &AlertMessage<'_>) -> Result<(), Failure> {
-    let webhook_url = m.config_str("webhook_url")?;
-    post_json(&m.settings.webhooks, webhook_url, json_dumps(&payload(m))).await
-}
 
 /// `mattermost_backend_send_test_message`.
 pub(super) fn test_payload(project_name: &str, display_name: &str, channel: Option<&Value>) -> Value {
@@ -50,7 +41,7 @@ pub(super) fn test_payload(project_name: &str, display_name: &str, channel: Opti
                 {"title": "message backend", "value": safe_markdown(display_name)},
             ],
         }]});
-    if let Some(channel) = channel.filter(|c| crate::grouping::py::truthy(c)) {
+    if let Some(channel) = channel.filter(|c| truthy(c)) {
         data["channel"] = channel.clone();
     }
     data
@@ -60,6 +51,7 @@ pub(super) fn test_payload(project_name: &str, display_name: &str, channel: Opti
 mod tests {
     use super::*;
     use crate::alerts::messaging::test_parts;
+    use crate::py::json_dumps;
 
     #[test]
     fn payload_like_upstream() {

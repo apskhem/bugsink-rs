@@ -1,4 +1,4 @@
-//! Python and Django string semantics that upstream's grouping depends on.
+//! Python and Django semantics that upstream's behaviour depends on, shared by grouping, display and the APIs.
 //!
 //! Grouping keys are compared byte-for-byte with keys upstream already stored, so "close enough" is not: e.g.
 //! `str.splitlines()` splits on 11 different line boundaries, `str(1e16)` is `1e+16`, and Django's `truncatechars`
@@ -242,23 +242,35 @@ fn trim_inner(value: &Value, max_size: i64, max_depth: usize, depth: usize, mut 
 /// `json.dumps(v)` with Python's defaults: `", "` / `": "` separators, `ensure_ascii=True`, Python float repr.
 pub fn json_dumps(v: &Value) -> String {
     let mut out = String::new();
-    write_json(v, &mut out);
+    write_json(v, JsonStyle::Python, &mut out);
     out
 }
 
-fn write_json(v: &Value, out: &mut String) {
+#[derive(Clone, Copy, PartialEq)]
+pub enum JsonStyle {
+    /// `json.dumps` defaults.
+    Python,
+    /// DRF's `JSONRenderer`: `separators=(",", ":")`, `ensure_ascii=False`, and U+2028 / U+2029 escaped.
+    Drf,
+}
+
+pub fn write_json(v: &Value, style: JsonStyle, out: &mut String) {
+    let (item_sep, key_sep) = match style {
+        JsonStyle::Python => (", ", ": "),
+        JsonStyle::Drf => (",", ":"),
+    };
     match v {
         Value::Null => out.push_str("null"),
         Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
         Value::Number(n) => out.push_str(&number_repr(n)),
-        Value::String(s) => write_json_str(s, out),
+        Value::String(s) => write_json_str(s, style, out),
         Value::Array(a) => {
             out.push('[');
             for (i, item) in a.iter().enumerate() {
                 if i > 0 {
-                    out.push_str(", ");
+                    out.push_str(item_sep);
                 }
-                write_json(item, out);
+                write_json(item, style, out);
             }
             out.push(']');
         }
@@ -266,18 +278,18 @@ fn write_json(v: &Value, out: &mut String) {
             out.push('{');
             for (i, (k, item)) in o.iter().enumerate() {
                 if i > 0 {
-                    out.push_str(", ");
+                    out.push_str(item_sep);
                 }
-                write_json_str(k, out);
-                out.push_str(": ");
-                write_json(item, out);
+                write_json_str(k, style, out);
+                out.push_str(key_sep);
+                write_json(item, style, out);
             }
             out.push('}');
         }
     }
 }
 
-fn write_json_str(s: &str, out: &mut String) {
+fn write_json_str(s: &str, style: JsonStyle, out: &mut String) {
     out.push('"');
     for c in s.chars() {
         match c {
@@ -289,6 +301,7 @@ fn write_json_str(s: &str, out: &mut String) {
             '\u{08}' => out.push_str("\\b"),
             '\u{0c}' => out.push_str("\\f"),
             ' '..='~' => out.push(c),
+            c if style == JsonStyle::Drf && c > '~' && !matches!(c, '\u{2028}' | '\u{2029}') => out.push(c),
             c => {
                 let mut buf = [0u16; 2];
                 for unit in c.encode_utf16(&mut buf) {
@@ -300,14 +313,83 @@ fn write_json_str(s: &str, out: &mut String) {
     out.push('"');
 }
 
+/// Django's `escape` (and Python's `html.escape`): `& < > " '` as entities.
+pub fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#x27;"),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// `datetime.isoformat()` for a UTC datetime: microseconds only when non-zero, `+00:00` offset.
 pub fn isoformat(dt: &DateTime<Utc>) -> String {
+    format_utc(dt, 'T', "+00:00")
+}
+
+/// `str(datetime)` for a UTC datetime: `isoformat()` with a space between date and time.
+pub fn str_datetime(dt: &DateTime<Utc>) -> String {
+    format_utc(dt, ' ', "+00:00")
+}
+
+/// DRF's `DateTimeField` output in UTC: `isoformat()` with `Z` for the offset.
+pub fn drf_datetime(dt: &DateTime<Utc>) -> String {
+    format_utc(dt, 'T', "Z")
+}
+
+fn format_utc(dt: &DateTime<Utc>, sep: char, offset: &str) -> String {
     let micros = dt.timestamp_subsec_micros();
-    if micros == 0 {
-        dt.format("%Y-%m-%dT%H:%M:%S+00:00").to_string()
-    } else {
-        format!("{}.{micros:06}+00:00", dt.format("%Y-%m-%dT%H:%M:%S"))
+    let fraction = if micros == 0 { String::new() } else { format!(".{micros:06}") };
+    format!("{}{sep}{}{fraction}{offset}", dt.format("%Y-%m-%d"), dt.format("%H:%M:%S"))
+}
+
+pub enum PyInt {
+    Small(i64),
+    /// Too big for 64 bits; true if negative.
+    Big(bool),
+}
+
+/// Python's `int(text)`: surrounding whitespace, a sign, and underscores between digits.
+pub fn py_int(text: &str) -> Option<PyInt> {
+    let t = strip(text);
+    let (negative, digits) = match t.strip_prefix('-') {
+        Some(rest) => (true, rest),
+        None => (false, t.strip_prefix('+').unwrap_or(t)),
+    };
+    if digits.is_empty() || digits.starts_with('_') || digits.ends_with('_') || digits.contains("__") {
+        return None;
     }
+    let digits: String = digits.chars().filter(|c| *c != '_').collect();
+    if !digits.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let signed = if negative { format!("-{digits}") } else { digits };
+    Some(match signed.parse::<i64>() {
+        Ok(n) => PyInt::Small(n),
+        Err(_) => PyInt::Big(negative),
+    })
+}
+
+/// Python's `uuid.UUID(hex)`: optional `urn:uuid:` and braces, hyphens anywhere, 32 hex digits.
+pub fn py_uuid(s: &str) -> Option<uuid::Uuid> {
+    let hex = s.replace("urn:", "").replace("uuid:", "");
+    let hex = hex.trim_matches(|c| c == '{' || c == '}').replace('-', "");
+    if hex.chars().count() != 32 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    uuid::Uuid::try_parse(&hex).ok()
+}
+
+/// Upstream's boolean environment variables: only "true", "1" and "yes" (any case) are true.
+pub fn py_bool(s: &str) -> Result<bool, String> {
+    Ok(["true", "1", "yes"].contains(&s.to_lowercase().as_str()))
 }
 
 #[cfg(test)]

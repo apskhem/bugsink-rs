@@ -19,9 +19,9 @@ use serde::Serialize;
 use serde_json::{Map, Value, json};
 use uuid::Uuid;
 
-use crate::digest::contexts_enriched_with_user_agent;
 use crate::grouping::main_exception;
-use crate::grouping::py::{isoformat, py_str, strip, truthy};
+use crate::py::{PyInt, isoformat, py_str, py_uuid, truthy};
+use crate::user_agent::contexts_enriched_with_user_agent;
 
 /// What the shaping needs besides the event's payload.
 pub struct EventFacts {
@@ -348,21 +348,13 @@ fn py_title(s: &str) -> String {
     out
 }
 
-/// Python's `int(str)` for the indices in `_meta` (whitespace, a sign and digit-separating underscores allowed).
+/// Python's `int(str)` for the indices in `_meta`; None beyond what an index can be (`i64::MIN` too, as every larger
+/// negative).
 fn py_int(s: &str) -> Option<i64> {
-    let s = strip(s);
-    let (negative, digits) = match s.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, s.strip_prefix('+').unwrap_or(s)),
-    };
-    if digits.is_empty() || digits.starts_with('_') || digits.ends_with('_') || digits.contains("__") {
-        return None;
+    match crate::py::py_int(s)? {
+        PyInt::Small(n) if n != i64::MIN => Some(n),
+        _ => None,
     }
-    if !digits.chars().all(|c| c == '_' || c.is_ascii_digit()) {
-        return None;
-    }
-    let n: i64 = digits.replace('_', "").parse().ok()?;
-    Some(if negative { -n } else { n })
 }
 
 /// Python indexing: negative counts from the end.
@@ -584,16 +576,6 @@ pub(crate) fn mark_debug_ids(entries: &mut [Value], data: &Value) -> Partial {
         }
     }
     Ok(())
-}
-
-/// Python's `UUID(str)`: optional `urn:uuid:` and braces, hyphens anywhere, 32 hex digits.
-fn py_uuid(s: &str) -> Option<Uuid> {
-    let hex = s.replace("urn:", "").replace("uuid:", "");
-    let hex = hex.trim_matches(|c| c == '{' || c == '}').replace('-', "");
-    if hex.chars().count() != 32 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    Uuid::try_parse(&hex).ok()
 }
 
 #[cfg(test)]

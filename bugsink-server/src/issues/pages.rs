@@ -13,8 +13,10 @@ use sqlx::{QueryBuilder, Row};
 use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::grouping::py::{splitlines, strip};
+use super::NewTurningPoint;
+use crate::accounts::display_name;
 use crate::grouping::{BUGSINK_V1, BUGSINK_V2, LOG_MESSAGE_TYPE, MECHANISM_INDEPENDENT};
+use crate::py::{splitlines, strip};
 use crate::search::{Search, Searched};
 
 /// `get_title_for_exception_type_and_value`.
@@ -63,7 +65,7 @@ pub async fn issue_detail(pool: &PgPool, issue_id: Uuid) -> sqlx::Result<IssueDe
     let lines = |s: String| s.split_terminator('\n').map(str::to_owned).collect();
     let slug: String = r.get("slug");
     Ok(IssueDetail {
-        friendly_id: format!("{}-{}", slug.to_uppercase(), r.get::<i32, _>("digest_order")),
+        friendly_id: super::friendly_id(&slug, r.get("digest_order")),
         title: title(r.get("calculated_type"), r.get("calculated_value")),
         last_frame_filename: r.get("last_frame_filename"),
         last_frame_module: r.get("last_frame_module"),
@@ -76,7 +78,7 @@ pub async fn issue_detail(pool: &PgPool, issue_id: Uuid) -> sqlx::Result<IssueDe
         unmute_on_volume_based_conditions: serde_json::from_str(r.get("unmute_on_volume_based_conditions"))
             .unwrap_or(Value::Array(vec![])),
         project_has_releases: r.get("has_releases"),
-        latest_release: crate::digest::releases::latest_release_version(pool, r.get("project_id")).await?,
+        latest_release: crate::releases::latest_release_version(pool, r.get("project_id")).await?,
     })
 }
 
@@ -221,12 +223,10 @@ pub async fn history(pool: &PgPool, issue_id: Uuid) -> sqlx::Result<Vec<TurningP
             metadata: serde_json::from_str(r.get("metadata")).unwrap_or(Value::Null),
             comment: r.get("comment"),
             user: r.get::<Option<i64>, _>("user_id").map(|id| {
-                let full_name = format!("{} {}", r.get::<String, _>("first_name"), r.get::<String, _>("last_name"));
-                let full_name = strip(&full_name);
                 let email: String = r.get("email");
                 UserRef {
                     id,
-                    display_name: if full_name.is_empty() { r.get("username") } else { full_name.to_owned() },
+                    display_name: display_name(r.get("first_name"), r.get("last_name"), r.get("username")),
                     gravatar_sha256: format!("{:x}", Sha256::digest(strip(&email.to_lowercase()).as_bytes())),
                 }
             }),
@@ -257,20 +257,29 @@ pub async fn add_comment(
     if comment.is_empty() {
         return Ok(None);
     }
-    let id = sqlx::query_scalar(
-        "INSERT INTO issues_turningpoint (project_id, issue_id, triggering_event_id, user_id, timestamp, kind,
-             metadata, comment)
-         VALUES ($1, $2, NULL, $3, $4, $5, '{}', $6) RETURNING id",
-    )
-    .bind(project_id)
-    .bind(issue_id)
-    .bind(user_id)
-    .bind(now)
-    .bind(TurningPointKind::ManualAnnotation as i32)
-    .bind(comment)
-    .fetch_one(pool)
-    .await?;
-    Ok(Some(id))
+    Ok(Some(insert_comment(pool, project_id, issue_id, Some(user_id), comment, now).await?))
+}
+
+/// A `MANUAL_ANNOTATION` turning point; its id.
+pub(crate) async fn insert_comment(
+    pool: &PgPool,
+    project_id: i64,
+    issue_id: Uuid,
+    user_id: Option<i64>,
+    comment: &str,
+    now: DateTime<Utc>,
+) -> sqlx::Result<i64> {
+    let turning_point = NewTurningPoint {
+        project_id,
+        issue_id,
+        kind: TurningPointKind::ManualAnnotation,
+        timestamp: now,
+        triggering_event_id: None,
+        user_id,
+        metadata: "{}",
+        comment,
+    };
+    turning_point.insert(pool).await
 }
 
 /// Navigation among an issue's events, within a search (`?q=`): an issue page's "first / previous / next / last".

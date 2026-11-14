@@ -3,17 +3,15 @@
 use serde_json::{Value, json};
 
 use super::AlertMessage;
-use crate::alerts::webhook::{Failure, post_json};
-use crate::grouping::py::{json_dumps, truncatechars};
+use crate::py::truncatechars;
 
-/// Slack gives `& < > * _` special meaning.
-fn safe_markdown(text: &str) -> String {
+/// Slack (and Mattermost) give `& < > * _` special meaning.
+pub(super) fn safe_markdown(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('*', "\\*").replace('_', "\\_")
 }
 
 /// `slack_backend_send_alert`.
-pub(super) async fn send_alert(m: &AlertMessage<'_>) -> Result<(), Failure> {
-    let webhook_url = m.config_str("webhook_url")?;
+pub(super) fn payload(m: &AlertMessage<'_>) -> Value {
     let issue_url = m.issue.url(m.settings);
     let title = truncatechars(&m.issue.title.replace('|', ""), 150);
 
@@ -21,7 +19,7 @@ pub(super) async fn send_alert(m: &AlertMessage<'_>) -> Result<(), Failure> {
         json!({"type": "header", "text": {"type": "plain_text", "text": title}}),
         json!({"type": "section", "text": {"type": "plain_text", "text": format!("{} issue", m.alert.reason())}}),
     ];
-    if let Some(unmute_reason) = m.alert.unmute_reason().filter(|r| !r.is_empty()) {
+    if let Some(unmute_reason) = m.alert.unmute_reason() {
         sections.push(json!({"type": "section", "text": {"type": "mrkdwn", "text": unmute_reason}}));
     }
     let fields = [("project", m.issue.project_name.as_str())];
@@ -35,8 +33,7 @@ pub(super) async fn send_alert(m: &AlertMessage<'_>) -> Result<(), Failure> {
     sections.push(json!({"type": "section", "text": {"type": "mrkdwn", "text": format!("<{issue_url}|view on Bugsink>")}}));
 
     // Mattermost requires a top-level text: the first section's.
-    let data = json!({"text": sections[0]["text"]["text"].clone(), "blocks": Value::Array(sections)});
-    post_json(&m.settings.webhooks, webhook_url, json_dumps(&data)).await
+    json!({"text": sections[0]["text"]["text"].clone(), "blocks": Value::Array(sections)})
 }
 
 /// `slack_backend_send_test_message`.

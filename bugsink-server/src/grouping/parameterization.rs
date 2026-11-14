@@ -9,7 +9,7 @@ use std::sync::LazyLock;
 
 use fancy_regex::Regex;
 
-use crate::grouping::py::{is_space, splitlines};
+use crate::py::{is_space, splitlines};
 
 struct Pattern {
     name: &'static str,

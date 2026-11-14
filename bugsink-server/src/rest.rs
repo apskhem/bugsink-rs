@@ -6,12 +6,12 @@
 //! pagination cursors are upstream's, down to the messages; `tools/parity/rest_api.sh` compares the two.
 
 mod events;
-pub(crate) mod fields;
+mod fields;
 mod issues;
 mod markdown;
 mod pagination;
 mod projects;
-pub(crate) mod pyjson;
+mod pyjson;
 
 use std::collections::BTreeSet;
 use std::future::Future;
@@ -27,9 +27,9 @@ use uuid::Uuid;
 
 use crate::accounts::User;
 use crate::api::ApiState;
-use crate::grouping::py::strip;
+use crate::forms::REQUIRED;
 use crate::installation::CAPABILITIES;
-use fields::{PyInt, py_int, py_uuid};
+use crate::py::{PyInt, drf_datetime, py_int, py_uuid, strip};
 
 pub const PREFIX: &str = "/api/canonical/0";
 
@@ -107,6 +107,11 @@ impl FromRequest<ApiState> for Request {
 }
 
 impl Request {
+    /// The method a view sees: GET and HEAD alike.
+    fn view_method(&self) -> &str {
+        if self.method == Method::HEAD { "GET" } else { self.method.as_str() }
+    }
+
     /// `scheme://host/path` (Django's `escape_uri_path` of the decoded path).
     pub fn absolute_path(&self) -> String {
         let decoded = String::from_utf8_lossy(&percent_decode(self.raw_path.as_bytes())).into_owned();
@@ -384,7 +389,7 @@ impl Ctx {
 
     /// GET and HEAD alike.
     pub fn method(&self) -> &str {
-        if self.req.method == Method::HEAD { "GET" } else { self.req.method.as_str() }
+        self.req.view_method()
     }
 }
 
@@ -415,8 +420,7 @@ async fn enter(state: &ApiState, req: &Request, route: &Route) -> Result<Token, 
     if req.method == Method::OPTIONS {
         return Ok(token);
     }
-    let method = if req.method == Method::HEAD { "GET" } else { req.method.as_str() };
-    match route.methods.iter().find(|(m, _)| *m == method) {
+    match route.methods.iter().find(|(m, _)| *m == req.view_method()) {
         None => Err(Drf::detail(
             StatusCode::METHOD_NOT_ALLOWED,
             &format!("Method \"{}\" not allowed.", req.method.as_str()),
@@ -533,7 +537,7 @@ pub async fn enforce_user_boundness_for_project(
     let pool = c.pool();
     match capability {
         "issues:read" | "events:read" | "issues:comment" | "issues:triage" | "issues:delete" | "releases:read" => {
-            if !has_membership_access(pool, user, project_id).await? {
+            if !crate::memberships::has_project_access(pool, user, project_id).await? {
                 return Err(Drf::forbidden("The user bound to this token is not an accepted member of this project."));
             }
         }
@@ -569,20 +573,6 @@ pub async fn enforce_user_boundness_for_team(c: &Ctx, capability: &str, team_id:
 pub async fn guard_project(c: &Ctx, capability: &str, project_id: i64) -> Result<(), Drf> {
     enforce_project_boundness(&c.token, project_id)?;
     enforce_user_boundness_for_project(c, capability, project_id).await
-}
-
-/// `user_has_project_membership_access`: issues and events need an accepted membership of the project.
-async fn has_membership_access(pool: &bugsink_db::PgPool, user: &User, project_id: i64) -> sqlx::Result<bool> {
-    if user.is_superuser {
-        return Ok(true);
-    }
-    sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM projects_projectmembership WHERE project_id = $1 AND user_id = $2 AND accepted)",
-    )
-    .bind(project_id)
-    .bind(user.id)
-    .fetch_one(pool)
-    .await
 }
 
 /// `projects_visible_to_user`, as SQL on `projects_project p` ($1: the user's id).
@@ -622,18 +612,25 @@ async fn team_visible(pool: &bugsink_db::PgPool, user: &User, team_id: Uuid) -> 
 
 // --- looking things up by what the request says -------------------------------------------------------------------
 
-/// `get_object_or_404(Project.objects.all(), pk=...)` (deleted projects too).
-pub async fn project_by_pk(c: &Ctx, identifier: &str) -> Result<i64, Drf> {
+/// `get_object_or_404(Project.objects.all(), pk=...)` (deleted projects too unless `include_deleted` is false), if the
+/// token may use it for `capability`.
+pub async fn guarded_project(c: &Ctx, identifier: &str, include_deleted: bool, capability: &str) -> Result<i64, Drf> {
     let id = match py_int(identifier) {
         Some(PyInt::Small(id)) => id,
         Some(PyInt::Big(_)) => return Err(Drf::no_match("Project")),
         None => return Err(Drf::not_found()),
     };
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM projects_project WHERE id = $1)")
-        .bind(id)
-        .fetch_one(c.pool())
-        .await?;
-    if exists { Ok(id) } else { Err(Drf::no_match("Project")) }
+    let exists: bool =
+        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM projects_project WHERE id = $1 AND ($2 OR NOT is_deleted))")
+            .bind(id)
+            .bind(include_deleted)
+            .fetch_one(c.pool())
+            .await?;
+    if !exists {
+        return Err(Drf::no_match("Project"));
+    }
+    guard_project(c, capability, id).await?;
+    Ok(id)
 }
 
 /// A UUID primary key from the URL or the query; malformed: "Not found.".
@@ -685,16 +682,18 @@ pub async fn find_issue(c: &Ctx, key: &IssueKey) -> sqlx::Result<Option<(Uuid, i
     }
 }
 
-/// The guarded issue of a URL or query: (id, project id).
-pub async fn issue_by_identifier(c: &Ctx, identifier: &str) -> Result<(Uuid, i64), Drf> {
+/// The issue of a URL or query, if the token may use it for `capability`: (id, project id).
+pub async fn guarded_issue(c: &Ctx, identifier: &str, capability: &str) -> Result<(Uuid, i64), Drf> {
     let key = issue_key(identifier).ok_or_else(invalid_issue_identifier)?;
-    find_issue(c, &key).await?.ok_or_else(|| Drf::no_match("Issue"))
+    let (id, project_id) = find_issue(c, &key).await?.ok_or_else(|| Drf::no_match("Issue"))?;
+    guard_project(c, capability, project_id).await?;
+    Ok((id, project_id))
 }
 
 /// A required query parameter (a `ValidationError` on it when missing or empty).
 pub fn required_param<'a>(req: &'a Request, key: &str) -> Result<&'a str, Drf> {
     match req.query.get(key) {
-        None | Some("") => Err(Drf::invalid(json!({ key: ["This field is required."] }))),
+        None | Some("") => Err(Drf::invalid(json!({ key: [REQUIRED] }))),
         Some(v) => Ok(v),
     }
 }
@@ -762,25 +761,15 @@ pub async fn event_counts(c: &Ctx, of: CountsOf) -> Reply {
     let mut buckets = Vec::new();
     let mut t = start;
     while t < end {
-        buckets.push(json!({"timestamp": fields::datetime(&t), "count": counts.get(&t).copied().unwrap_or(0)}));
+        buckets.push(json!({"timestamp": drf_datetime(&t), "count": counts.get(&t).copied().unwrap_or(0)}));
         t += TimeDelta::hours(1);
     }
     ok(json!({
-        "start": fields::datetime(&start),
-        "end": fields::datetime(&end),
+        "start": drf_datetime(&start),
+        "end": drf_datetime(&end),
         "interval_seconds": 3600,
         "buckets": buckets,
     }))
-}
-
-/// Python's `str(datetime)` for a UTC datetime: a cursor position.
-pub fn py_str_datetime(t: &chrono::DateTime<chrono::Utc>) -> String {
-    let micros = t.timestamp_subsec_micros();
-    if micros == 0 {
-        t.format("%Y-%m-%d %H:%M:%S+00:00").to_string()
-    } else {
-        format!("{}.{micros:06}+00:00", t.format("%Y-%m-%d %H:%M:%S"))
-    }
 }
 
 /// `body_object` on `request.data`, as a `ValidationError`.

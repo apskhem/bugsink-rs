@@ -2,10 +2,13 @@
 //! messages they refuse with. A serializer's errors are `{field: [messages]}` in the serializer's field order, or
 //! `{"non_field_errors": [...]}` once every field is valid.
 
+use std::sync::LazyLock;
+
 use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc};
 use serde_json::{Map, Value, json};
 
-use crate::grouping::py::{float_repr, py_str, strip};
+use crate::forms::REQUIRED;
+use crate::py::{PyInt, drf_datetime, float_repr, py_int, py_str, py_uuid, strip};
 
 /// A JSON body as a serializer sees it: an object, or the error DRF gives for anything else.
 pub fn body_object(data: &Value) -> Result<&Map<String, Value>, Value> {
@@ -76,7 +79,7 @@ type Checked<T> = Result<T, Vec<String>>;
 /// `validate_empty_values`: Ok(None) when the field is left out (and may be), Ok(Some) to validate.
 pub fn present<'a>(data: &'a Map<String, Value>, field: &str, required: bool) -> Checked<Option<&'a Value>> {
     match data.get(field) {
-        None if required => Err(vec!["This field is required.".into()]),
+        None if required => Err(vec![REQUIRED.into()]),
         None => Ok(None),
         Some(Value::Null) => Err(vec!["This field may not be null.".into()]),
         Some(v) => Ok(Some(v)),
@@ -154,7 +157,9 @@ pub fn int_field(v: &Value, min: Option<i64>, max: Option<i64>) -> Result<i64, V
         }
         other => {
             let text = str_of(other);
-            let text = regex::Regex::new(r"\.0*\s*$").expect("valid").replace(&text, "").into_owned();
+            static TRAILING_ZEROS: LazyLock<regex::Regex> =
+                LazyLock::new(|| regex::Regex::new(r"\.0*\s*$").expect("valid"));
+            let text = TRAILING_ZEROS.replace(&text, "").into_owned();
             match py_int(&text) {
                 Some(PyInt::Small(n)) => n,
                 // beyond 64 bits: only the range checks can tell
@@ -182,33 +187,6 @@ fn range_errors(n: i64, min: Option<i64>, max: Option<i64>) -> Vec<String> {
         errors.push(format!("Ensure this value is less than or equal to {max}."));
     }
     errors
-}
-
-pub enum PyInt {
-    Small(i64),
-    /// Too big for 64 bits; true if negative.
-    Big(bool),
-}
-
-/// Python's `int(text)`: surrounding whitespace, a sign, and underscores between digits.
-pub fn py_int(text: &str) -> Option<PyInt> {
-    let t = strip(text);
-    let (negative, digits) = match t.strip_prefix('-') {
-        Some(rest) => (true, rest),
-        None => (false, t.strip_prefix('+').unwrap_or(t)),
-    };
-    if digits.is_empty() || digits.starts_with('_') || digits.ends_with('_') || digits.contains("__") {
-        return None;
-    }
-    let digits: String = digits.chars().filter(|c| *c != '_').collect();
-    if !digits.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    let signed = if negative { format!("-{digits}") } else { digits };
-    Some(match signed.parse::<i64>() {
-        Ok(n) => PyInt::Small(n),
-        Err(_) => PyInt::Big(negative),
-    })
 }
 
 /// upstream's `make_enum_field`: a choice by name (lower case).
@@ -256,16 +234,6 @@ pub fn uuid_pk(v: &Value) -> Result<uuid::Uuid, Vec<String>> {
 /// The error for a primary key that names nothing.
 pub fn does_not_exist(v: &Value) -> Vec<String> {
     vec![format!("Invalid pk \"{}\" - object does not exist.", str_of(v))]
-}
-
-/// Python's `uuid.UUID(hex=...)`: optional `urn:uuid:` and braces, hyphens anywhere, 32 hex digits.
-pub fn py_uuid(s: &str) -> Option<uuid::Uuid> {
-    let hex = s.replace("urn:", "").replace("uuid:", "");
-    let hex = hex.trim_matches(|c| c == '{' || c == '}').replace('-', "");
-    if hex.chars().count() != 32 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
-        return None;
-    }
-    uuid::Uuid::try_parse(&hex).ok()
 }
 
 const DATETIME_FORMAT: &str =
@@ -354,12 +322,14 @@ fn iso_time(clock: &str) -> Option<NaiveTime> {
 
 /// Django's `datetime_re` fallback.
 fn django_datetime_re(s: &str) -> Option<DateTime<Utc>> {
-    let re = regex::Regex::new(concat!(
-        r"^(\d{4})-(\d{1,2})-(\d{1,2})[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:[.,](\d{1,6})\d{0,6})?)?",
-        r"\s*(Z|[+-]\d{2}(?::?\d{2})?)?$",
-    ))
-    .expect("valid");
-    let c = re.captures(s)?;
+    static DATETIME_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
+        regex::Regex::new(concat!(
+            r"^(\d{4})-(\d{1,2})-(\d{1,2})[T ](\d{1,2}):(\d{1,2})(?::(\d{1,2})(?:[.,](\d{1,6})\d{0,6})?)?",
+            r"\s*(Z|[+-]\d{2}(?::?\d{2})?)?$",
+        ))
+        .expect("valid")
+    });
+    let c = DATETIME_RE.captures(s)?;
     let n = |i: usize| c.get(i).map_or(Some(0), |m| m.as_str().parse::<u32>().ok());
     let micros = c.get(7).map_or(Some(0), |m| format!("{:0<6}", m.as_str()).parse().ok())?;
     let date = NaiveDate::from_ymd_opt(c[1].parse().ok()?, n(2)?, n(3)?)?;
@@ -377,18 +347,8 @@ fn django_datetime_re(s: &str) -> Option<DateTime<Utc>> {
     Some(offset.from_local_datetime(&NaiveDateTime::new(date, time)).single()?.with_timezone(&Utc))
 }
 
-/// DRF's `DateTimeField` output: ISO 8601 in UTC, `Z`, microseconds only when there are any.
-pub fn datetime(t: &DateTime<Utc>) -> String {
-    let micros = t.timestamp_subsec_micros();
-    if micros == 0 {
-        t.format("%Y-%m-%dT%H:%M:%SZ").to_string()
-    } else {
-        format!("{}.{micros:06}Z", t.format("%Y-%m-%dT%H:%M:%S"))
-    }
-}
-
 pub fn opt_datetime(t: &Option<DateTime<Utc>>) -> Value {
-    t.as_ref().map_or(Value::Null, |t| Value::String(datetime(t)))
+    t.as_ref().map_or(Value::Null, |t| Value::String(drf_datetime(t)))
 }
 
 #[cfg(test)]
@@ -397,7 +357,7 @@ mod tests {
 
     #[test]
     fn datetimes_like_django() {
-        let utc = |s: &str| parse_datetime(s).map(|t| datetime(&t));
+        let utc = |s: &str| parse_datetime(s).map(|t| drf_datetime(&t));
         assert_eq!(utc("2026-11-02T03:00").as_deref(), Some("2026-11-02T03:00:00Z"));
         assert_eq!(utc("2026-11-02").as_deref(), Some("2026-11-02T00:00:00Z"));
         assert_eq!(utc("2026-11-02 01:30:00.5+01:00").as_deref(), Some("2026-11-02T00:30:00.500000Z"));

@@ -4,13 +4,10 @@
 
 use bugsink_db::PgPool;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use sqlx::PgExecutor;
 use uuid::Uuid;
 
 use crate::tasks;
-
-pub const JOB_KIND: &str = "delete_issue_deps";
 
 /// `DELETE_ISSUE_DEPS_BATCH_SIZE`
 const BATCH_SIZE: i64 = 500;
@@ -31,12 +28,15 @@ pub struct DeleteIssueDepsJob {
     pub issue_id: Uuid,
 }
 
-pub(crate) async fn enqueue<'e>(executor: impl PgExecutor<'e>, project_id: i64, issue_id: Uuid) -> anyhow::Result<()> {
-    tasks::enqueue(executor, JOB_KIND, &DeleteIssueDepsJob { project_id, issue_id }).await
+impl tasks::Job for DeleteIssueDepsJob {
+    const KIND: &str = "delete_issue_deps";
 }
 
-pub async fn handle_job(pool: PgPool, payload: Value) -> anyhow::Result<()> {
-    let job: DeleteIssueDepsJob = serde_json::from_value(payload)?;
+pub(crate) async fn enqueue<'e>(executor: impl PgExecutor<'e>, project_id: i64, issue_id: Uuid) -> anyhow::Result<()> {
+    tasks::enqueue(executor, &DeleteIssueDepsJob { project_id, issue_id }).await
+}
+
+pub async fn handle_job(pool: PgPool, job: DeleteIssueDepsJob) -> anyhow::Result<()> {
     if delete_batch(&pool, job.project_id, job.issue_id).await? {
         enqueue(&pool, job.project_id, job.issue_id).await?;
     }

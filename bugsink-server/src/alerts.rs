@@ -1,6 +1,6 @@
 //! Alerts on new issues, regressions and unmutes, by email to project members and through the project's messaging
-//! services. A port of upstream Bugsink 2.6.3's `alerts/` (`tasks.py`, `service_backends/`) and the email plumbing it
-//! uses (`bugsink/utils.py::send_rendered_email`, `phonehome/models.py::Installation`).
+//! services. A port of upstream Bugsink 2.6.3's `alerts/` (`tasks.py`, `service_backends/`); the email plumbing it uses
+//! is `crate::mail`.
 //!
 //! Digest enqueues an `alert` job in its own transaction (upstream: on commit), if the project has that kind of alert
 //! switched on. The alert job enqueues one `messaging_alert` job per messaging service and sends the emails itself.
@@ -9,10 +9,9 @@
 //!
 //! SKIPPED(parity) (optional extras, see the README): `TIME_ZONE` (dates in unmute reasons are UTC).
 
-pub(crate) mod email;
+mod email;
 pub mod messaging;
 pub mod setup;
-pub(crate) mod template;
 mod webhook;
 
 use std::sync::Arc;
@@ -24,13 +23,11 @@ use serde_json::Value;
 use sqlx::Row;
 use uuid::Uuid;
 
-use crate::grouping::py::{py_str, splitlines};
+use crate::py::{py_str, splitlines};
 use crate::tasks;
 
-pub use email::EmailSettings;
+pub use crate::mail::EmailSettings;
 pub use webhook::WebhookSettings;
-
-pub const JOB_KIND: &str = "alert";
 
 /// Settings for alerts, from the same environment variables as upstream's Docker image.
 #[derive(clap::Args, Clone, Debug)]
@@ -51,11 +48,6 @@ impl AlertSettings {
     pub fn base_url(&self) -> &str {
         self.base_url.strip_suffix('/').unwrap_or(&self.base_url)
     }
-}
-
-/// Upstream's boolean environment variables: only "true", "1" and "yes" (any case) are true.
-pub(crate) fn py_bool(s: &str) -> Result<bool, String> {
-    Ok(["true", "1", "yes"].contains(&s.to_lowercase().as_str()))
 }
 
 /// `send_new_issue_alert`, `send_regression_alert`, `send_unmute_alert`.
@@ -91,9 +83,10 @@ impl Alert {
         }
     }
 
+    /// None for an empty one too.
     fn unmute_reason(&self) -> Option<&str> {
         match self {
-            Self::Unmute { unmute_reason } => Some(unmute_reason),
+            Self::Unmute { unmute_reason } if !unmute_reason.is_empty() => Some(unmute_reason),
             _ => None,
         }
     }
@@ -126,8 +119,12 @@ pub struct AlertJob {
     pub alert: Alert,
 }
 
+impl tasks::Job for AlertJob {
+    const KIND: &str = "alert";
+}
+
 pub(crate) async fn enqueue(tx: &mut Transaction<'_, Postgres>, issue_id: Uuid, alert: Alert) -> anyhow::Result<()> {
-    tasks::enqueue(&mut **tx, JOB_KIND, &AlertJob { issue_id, alert }).await
+    tasks::enqueue(&mut **tx, &AlertJob { issue_id, alert }).await
 }
 
 /// The issue as alerts show it, read when the alert is sent (like upstream).
@@ -170,9 +167,8 @@ fn issue_title(ty: &str, value: &str) -> String {
     if ty == "Log Message" { first_line.to_string() } else { format!("{ty}: {first_line}") }
 }
 
-/// Job handler for `JOB_KIND` (`_send_alert`).
-pub async fn handle_job(pool: PgPool, payload: Value, settings: Arc<AlertSettings>) -> anyhow::Result<()> {
-    let job: AlertJob = serde_json::from_value(payload)?;
+/// Job handler (`_send_alert`).
+pub async fn handle_job(pool: PgPool, job: AlertJob, settings: Arc<AlertSettings>) -> anyhow::Result<()> {
     let Some(issue) = IssueForAlert::load(&pool, job.issue_id).await? else {
         return Ok(()); // deleted since
     };
@@ -188,7 +184,7 @@ pub async fn handle_job(pool: PgPool, payload: Value, settings: Arc<AlertSetting
         if let Some(messaging_job) =
             messaging::MessagingJob::new(service.get("id"), service.get("kind"), service.get("config"), issue.id, &job.alert)
         {
-            tasks::enqueue(&mut *tx, messaging::JOB_KIND, &messaging_job).await?;
+            tasks::enqueue(&mut *tx, &messaging_job).await?;
         }
     }
     tx.commit().await?;

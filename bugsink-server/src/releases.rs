@@ -1,20 +1,21 @@
-//! `releases/models.py` and `issues/regressions.py`: releases are created on first sight; ordering is semver-based
+//! `releases/models.py`: releases are created on first sight; ordering is semver-based
 //! when versions are semver, by date otherwise ("sort epochs" separate runs of the two).
 
 use std::cmp::Ordering;
 
 use bugsink_db::{Postgres, Transaction, TurningPointKind};
-use crate::grouping::py::{json_dumps, take_chars};
+use crate::py::{json_dumps, take_chars};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::Row;
 use uuid::Uuid;
 
-use super::{DigestError, Issue, Project, insert_turning_point};
+use crate::digest::Issue;
+use crate::issues::NewTurningPoint;
 
-struct Release {
+pub(crate) struct Release {
     id: Uuid,
-    version: String,
+    pub version: String,
     date_released: DateTime<Utc>,
     semver: String,
     is_semver: bool,
@@ -48,7 +49,10 @@ fn cmp_releases(a: &Release, b: &Release) -> Ordering {
     })
 }
 
-async fn ordered_releases<'e>(executor: impl sqlx::PgExecutor<'e>, project_id: i64) -> sqlx::Result<Vec<Release>> {
+pub(crate) async fn ordered_releases<'e>(
+    executor: impl sqlx::PgExecutor<'e>,
+    project_id: i64,
+) -> sqlx::Result<Vec<Release>> {
     let mut releases: Vec<Release> = sqlx::query(
         "SELECT id, version, date_released, semver, is_semver, sort_epoch FROM releases_release WHERE project_id = $1",
     )
@@ -145,8 +149,17 @@ pub(crate) async fn create_release_if_needed(
         .fetch_all(&mut **tx)
         .await?;
         for waiting_issue in &waiting {
-            insert_turning_point(tx, project_id, *waiting_issue, None, timestamp, TurningPointKind::NextMaterialized, &metadata)
-                .await?;
+            let turning_point = NewTurningPoint {
+                project_id,
+                issue_id: *waiting_issue,
+                kind: TurningPointKind::NextMaterialized,
+                timestamp,
+                triggering_event_id: None,
+                user_id: None,
+                metadata: &metadata,
+                comment: "",
+            };
+            turning_point.insert(&mut **tx).await?;
         }
         sqlx::query(
             "UPDATE issues_issue SET fixed_at = fixed_at || $2, is_resolved_by_next_release = false
@@ -168,42 +181,10 @@ pub(crate) async fn create_release_if_needed(
 }
 
 /// `"a\nb\n"` -> `["a", "b"]` (newline-terminated lists, upstream's `parse_lines`).
-fn parse_lines(s: &str) -> Vec<&str> {
+pub(crate) fn parse_lines(s: &str) -> Vec<&str> {
     let mut parts: Vec<&str> = s.split('\n').collect();
     parts.pop();
     parts
-}
-
-/// `issue_is_regression`: given a new event at `current_release`, was the issue resolved for that release?
-pub(crate) async fn issue_is_regression(
-    tx: &mut Transaction<'_, Postgres>,
-    project: &Project,
-    issue: &Issue,
-    current_release: &str,
-) -> Result<bool, DigestError> {
-    if !issue.is_resolved || issue.is_resolved_by_next_release {
-        return Ok(false);
-    }
-    if issue.is_resolved_unconditionally || !project.has_releases {
-        return Ok(true);
-    }
-    let sorted = ordered_releases(&mut **tx, project.id).await?;
-    let fixed_at = parse_lines(&issue.fixed_at);
-    let events_at = parse_lines(&issue.events_at);
-
-    let mut marked_as_resolved = false;
-    for release in &sorted {
-        if fixed_at.contains(&release.version.as_str()) {
-            marked_as_resolved = true;
-        } else if events_at.contains(&release.version.as_str()) {
-            marked_as_resolved = false;
-        }
-        if release.version == current_release {
-            return Ok(marked_as_resolved);
-        }
-    }
-    // Upstream raises here too (e.g. a release name that sanitizing changed).
-    Err(DigestError::Drop(format!("can't find release {current_release:?}")))
 }
 
 #[cfg(test)]

@@ -3,7 +3,7 @@
 
 use std::io::BufRead;
 
-use bugsink_server::digest::contexts_enriched_with_user_agent;
+use bugsink_server::user_agent::contexts_enriched_with_user_agent;
 use serde_json::Value;
 
 fn main() {

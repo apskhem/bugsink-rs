@@ -13,8 +13,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use bugsink_db::PgPool;
-use bugsink_db::models::{Event, EventSummary, IssueSummary};
+use bugsink_db::{PgPool, Postgres};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -24,14 +23,18 @@ use uuid::Uuid;
 mod installation;
 mod issue_pages;
 mod members;
+mod models;
 mod project_admin;
 mod teams;
+
+use models::{Event, EventSummary, IssueSummary};
 
 use crate::accounts::{self, CurrentUser, User, self_service};
 use crate::issues::pages;
 use crate::issues::{self, Action};
+use crate::memberships::{self, Group};
 use crate::search::{Search, Searched};
-use crate::{Settings, memberships, projects};
+use crate::Settings;
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -71,13 +74,13 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/auth/logout", post(accounts::logout))
         .route(
             "/api/v1/auth/reset-password/{token}",
-            get(self_service::check_reset_password).post(accounts::reset_password),
+            get(self_service::check_token).post(accounts::reset_password),
         )
         .route("/api/v1/auth/settings", get(self_service::settings))
         .route("/api/v1/auth/signup", post(self_service::signup))
         .route(
             "/api/v1/auth/confirm-email/{token}",
-            get(self_service::check_confirm_email).post(self_service::confirm_email),
+            get(self_service::check_token).post(self_service::confirm_email),
         )
         .route("/api/v1/auth/resend-confirmation", post(self_service::resend_confirmation))
         .route("/api/v1/auth/request-reset-password", post(self_service::request_reset_password))
@@ -102,7 +105,7 @@ pub fn router(state: ApiState) -> Router {
 pub enum ApiError {
     BadRequest(String),
     /// A form's errors by field, with Django's messages.
-    Invalid(projects::FieldErrors),
+    Invalid(crate::forms::FieldErrors),
     Conflict(String),
     Unauthorized,
     CsrfFailed,
@@ -152,6 +155,17 @@ impl IntoResponse for ApiError {
 
 pub(crate) type ApiResult<T> = Result<Json<T>, ApiError>;
 
+/// 201 with the new object's id.
+fn created(id: impl Serialize) -> Response {
+    (StatusCode::CREATED, Json(json!({ "id": id }))).into_response()
+}
+
+/// A list page's tab (`?tab=`).
+#[derive(Deserialize)]
+struct TabQuery {
+    tab: Option<String>,
+}
+
 /// Keyset-free offset pagination for now; issue lists are short-lived views, not exports.
 #[derive(Deserialize)]
 struct Page {
@@ -163,6 +177,14 @@ struct Page {
 impl Page {
     fn limit(&self) -> i64 {
         self.limit.unwrap_or(50).clamp(1, 250)
+    }
+
+    fn push_window(&self, qb: &mut QueryBuilder<Postgres>) {
+        qb.push(" OFFSET ").push_bind(self.offset).push(" LIMIT ").push_bind(self.limit());
+    }
+
+    fn paged<T>(&self, items: Vec<T>) -> Json<Paged<T>> {
+        Json(Paged { items, offset: self.offset, limit: self.limit() })
     }
 }
 
@@ -181,18 +203,22 @@ async fn health(State(state): State<ApiState>) -> ApiResult<serde_json::Value> {
 /// Upstream's `user_has_project_membership_access`, which `project/issue/event_membership_required` apply after
 /// looking the object up (so a missing object is a 404 for everyone, and an inaccessible one a 403).
 pub(crate) async fn require_project_access(pool: &PgPool, user: &User, project_id: i64) -> Result<(), ApiError> {
-    if user.is_superuser {
-        return Ok(());
-    }
-    let member: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM projects_projectmembership WHERE project_id = $1 AND user_id = $2 AND accepted)",
-    )
-    .bind(project_id)
-    .bind(user.id)
-    .fetch_one(pool)
-    .await?;
-    if !member {
+    if !memberships::has_project_access(pool, user, project_id).await? {
         return Err(ApiError::Forbidden("You don't have permission to access this project".into()));
+    }
+    Ok(())
+}
+
+/// The team exists, or the project exists and isn't deleted; 404 otherwise.
+async fn require_exists(state: &ApiState, group: Group) -> Result<(), ApiError> {
+    if group.exists(&state.pool).await? { Ok(()) } else { Err(ApiError::NotFound) }
+}
+
+/// `team_edit`, `team_members`, `_check_project_admin`: admins of an existing team or (not deleted) project only.
+async fn require_admin(state: &ApiState, user: &User, group: Group) -> Result<(), ApiError> {
+    require_exists(state, group).await?;
+    if !group.is_admin(&state.pool, user).await? {
+        return Err(ApiError::Forbidden(format!("You are not an admin of this {}", group.noun())));
     }
     Ok(())
 }
@@ -251,10 +277,8 @@ impl IssueListQuery {
         qb.push_bind(project_ids.to_vec());
         qb.push(format_args!(") AND NOT is_deleted AND {}", self.state_sql()?));
         search.push_conditions(&mut qb, Searched::Issues);
-        qb.push(format_args!(" ORDER BY {} OFFSET ", self.order_sql()));
-        qb.push_bind(page.offset);
-        qb.push(" LIMIT ");
-        qb.push_bind(page.limit());
+        qb.push(format_args!(" ORDER BY {}", self.order_sql()));
+        page.push_window(&mut qb);
         let issues: Vec<IssueSummary> = qb.build_query_as().fetch_all(pool).await?;
         let ids: Vec<Uuid> = issues.iter().map(|i| i.id).collect();
         let mut sparklines = pages::issue_list_sparklines(pool, &ids, Utc::now()).await?;
@@ -262,7 +286,7 @@ impl IssueListQuery {
             .into_iter()
             .map(|issue| IssueListItem { sparkline: sparklines.remove(&issue.id).unwrap_or_default(), issue })
             .collect();
-        Ok(Json(Paged { items, offset: page.offset, limit: page.limit() }))
+        Ok(page.paged(items))
     }
 }
 
@@ -366,12 +390,7 @@ async fn issue_action(
     let applied = issues::apply_to_issue(&state.pool, issue_id, &action, Some(user.id), Utc::now())
         .await
         .map_err(ApiError::internal)?;
-    let issue = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {ISSUE_COLUMNS} FROM issues_issue WHERE id = $1 AND NOT is_deleted"
-    )))
-    .bind(issue_id)
-    .fetch_optional(&state.pool)
-    .await?;
+    let issue = issue_by_id(&state.pool, issue_id).await?;
     Ok(Json(ActionResult { applied, issue }))
 }
 
@@ -411,15 +430,14 @@ async fn global_issue_actions(
 
 /// `issue_membership_required`: a deleted issue is a 404.
 pub(crate) async fn accessible_issue(pool: &PgPool, user: &User, issue_id: Uuid) -> Result<IssueSummary, ApiError> {
-    let issue: IssueSummary = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {ISSUE_COLUMNS} FROM issues_issue WHERE id = $1 AND NOT is_deleted"
-    )))
-    .bind(issue_id)
-    .fetch_optional(pool)
-    .await?
-    .ok_or(ApiError::NotFound)?;
+    let issue = issue_by_id(pool, issue_id).await?.ok_or(ApiError::NotFound)?;
     require_project_access(pool, user, issue.project_id).await?;
     Ok(issue)
+}
+
+async fn issue_by_id(pool: &PgPool, issue_id: Uuid) -> sqlx::Result<Option<IssueSummary>> {
+    let sql = format!("SELECT {ISSUE_COLUMNS} FROM issues_issue WHERE id = $1 AND NOT is_deleted");
+    sqlx::query_as(sqlx::AssertSqlSafe(sql)).bind(issue_id).fetch_optional(pool).await
 }
 
 pub(crate) const EVENT_SUMMARY_COLUMNS: &str = "id, event_id, issue_id, digest_order, ingested_at, timestamp, level,
@@ -447,12 +465,9 @@ async fn list_events(
     let mut qb = QueryBuilder::new(format!("SELECT {EVENT_SUMMARY_COLUMNS} FROM events_event WHERE issue_id = "));
     qb.push_bind(issue_id);
     search.push_conditions(&mut qb, Searched::EventsOf(issue_id));
-    qb.push(" ORDER BY digest_order DESC OFFSET ");
-    qb.push_bind(page.offset);
-    qb.push(" LIMIT ");
-    qb.push_bind(page.limit());
-    let items = qb.build_query_as().fetch_all(&state.pool).await?;
-    Ok(Json(Paged { items, offset: page.offset, limit: page.limit() }))
+    qb.push(" ORDER BY digest_order DESC");
+    page.push_window(&mut qb);
+    Ok(page.paged(qb.build_query_as().fetch_all(&state.pool).await?))
 }
 
 async fn get_event(

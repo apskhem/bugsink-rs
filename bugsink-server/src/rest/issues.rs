@@ -10,15 +10,16 @@ use serde_json::{Value, json};
 use sqlx::QueryBuilder;
 use uuid::Uuid;
 
-use super::fields::{self, Errors};
+use super::fields::{self, Errors, required};
 use super::pagination::{self, Ordering};
 use super::{
-    CountsOf, Ctx, Drf, Request, Route, guard_project, issue_by_identifier, issue_key, object_body, ok,
-    py_str_datetime, render, serve,
+    CountsOf, Ctx, Drf, Request, Route, guard_project, guarded_issue, guarded_project, issue_key, object_body, ok,
+    render, serve,
 };
 use crate::api::ApiState;
-use crate::grouping::py::strip;
 use crate::issues::{self as triage, Action};
+use crate::py::{drf_datetime, str_datetime, strip};
+use crate::releases::parse_lines;
 use crate::search::{ParsedQuery, Search, Searched, parse_query};
 
 #[derive(sqlx::FromRow)]
@@ -50,13 +51,6 @@ const ISSUE_SELECT: &str = "SELECT i.id, p.slug, i.project_id, i.digest_order, i
     i.unmute_on_volume_based_conditions
     FROM issues_issue i JOIN projects_project p ON p.id = i.project_id";
 
-/// `parse_lines`: newline-terminated.
-fn lines(s: &str) -> Vec<&str> {
-    let mut parts: Vec<&str> = s.split('\n').collect();
-    parts.pop();
-    parts
-}
-
 /// `IssueSerializer`.
 fn issue_json(r: &IssueRow) -> Value {
     let int = |v: &Value| match v {
@@ -76,11 +70,11 @@ fn issue_json(r: &IssueRow) -> Value {
         .collect();
     json!({
         "id": r.id,
-        "friendly_id": format!("{}-{}", r.slug.to_uppercase(), r.digest_order),
+        "friendly_id": triage::friendly_id(&r.slug, r.digest_order),
         "project": r.project_id,
         "digest_order": r.digest_order,
-        "last_seen": fields::datetime(&r.last_seen),
-        "first_seen": fields::datetime(&r.first_seen),
+        "last_seen": drf_datetime(&r.last_seen),
+        "first_seen": drf_datetime(&r.first_seen),
         "digested_event_count": r.digested_event_count,
         "stored_event_count": r.stored_event_count,
         "calculated_type": r.calculated_type,
@@ -89,8 +83,8 @@ fn issue_json(r: &IssueRow) -> Value {
         "is_resolved": r.is_resolved,
         "is_resolved_unconditionally": r.is_resolved_unconditionally,
         "is_resolved_by_next_release": r.is_resolved_by_next_release,
-        "fixed_at": lines(&r.fixed_at),
-        "events_at": lines(&r.events_at),
+        "fixed_at": parse_lines(&r.fixed_at),
+        "events_at": parse_lines(&r.events_at),
         "is_muted": r.is_muted,
         "unmute_after": fields::opt_datetime(&r.unmute_after),
         "unmute_on_volume_based_conditions": conditions,
@@ -101,12 +95,6 @@ async fn issue_row(c: &Ctx, id: Uuid) -> sqlx::Result<IssueRow> {
     sqlx::query_as(sqlx::AssertSqlSafe(format!("{ISSUE_SELECT} WHERE i.id = $1"))).bind(id).fetch_one(c.pool()).await
 }
 
-/// The issue in the URL, checked for the capability: (id, project id).
-async fn guarded_issue(c: &Ctx, pk: &str, capability: &str) -> Result<(Uuid, i64), Drf> {
-    let (id, project_id) = issue_by_identifier(c, pk).await?;
-    guard_project(c, capability, project_id).await?;
-    Ok((id, project_id))
-}
 
 static LIST: Route =
     Route { allow: "GET, HEAD, OPTIONS", name: "Issue List", methods: &[("GET", Some("issues:read"))] };
@@ -116,21 +104,7 @@ pub async fn list(State(state): State<ApiState>, req: Request) -> Response {
     serve(state, req, &LIST, |c| async move {
         let mut project = c.token.project_id;
         if c.req.query.contains("project") {
-            let pk = c.req.query.get("project").unwrap_or("");
-            let id = match fields::py_int(pk) {
-                Some(fields::PyInt::Small(id)) => id,
-                Some(fields::PyInt::Big(_)) => return Err(Drf::no_match("Project")),
-                None => return Err(Drf::not_found()),
-            };
-            let exists: bool =
-                sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM projects_project WHERE id = $1 AND NOT is_deleted)")
-                    .bind(id)
-                    .fetch_one(c.pool())
-                    .await?;
-            if !exists {
-                return Err(Drf::no_match("Project"));
-            }
-            guard_project(&c, "issues:read", id).await?;
+            let id = guarded_project(&c, c.req.query.get("project").unwrap_or(""), false, "issues:read").await?;
             project = Some(id);
         }
 
@@ -185,11 +159,10 @@ pub async fn list(State(state): State<ApiState>, req: Request) -> Response {
             "last_seen" => (&["i.last_seen", "i.id"], "timestamptz"),
             _ => (&["i.digested_event_count", "i.last_seen", "i.id"], "integer"),
         };
-        let ordering = Ordering { fields: fields.iter().map(|f| (*f, desc)).collect(), cast, page_size: 250 };
-        let cursor = pagination::decode_cursor(&c.req)?;
-        let page = pagination::paginate(c.pool(), query, &ordering, cursor, |r: &IssueRow| match sort {
+        let ordering = Ordering { fields: fields.iter().map(|f| (*f, desc)).collect(), cast };
+        let page = pagination::paginate(c.pool(), &c.req, query, &ordering, |r: &IssueRow| match sort {
             "digest_order" => r.digest_order.to_string(),
-            "last_seen" => py_str_datetime(&r.last_seen),
+            "last_seen" => str_datetime(&r.last_seen),
             _ => r.digested_event_count.to_string(),
         })
         .await?;
@@ -226,9 +199,7 @@ async fn search_issues(
         query.push_bind(key).push(" AND v.value = ").push_bind(value).push(")");
     }
     if !plain_text.is_empty() {
-        let like = format!("%{}%", plain_text.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
-        query.push(" AND (UPPER(i.calculated_type::text) LIKE UPPER(").push_bind(like.clone());
-        query.push(") OR UPPER(i.calculated_value::text) LIKE UPPER(").push_bind(like).push("))");
+        crate::search::push_icontains(query, "i.", &crate::search::contains_pattern(&plain_text));
     }
     Ok(())
 }
@@ -275,9 +246,8 @@ pub async fn tags(State(state): State<ApiState>, Path(pk): Path<String>, req: Re
         if let Some(key) = c.req.query.get("key") {
             query.push(" AND k.key = ").push_bind(key.to_owned());
         }
-        let ordering = Ordering { fields: vec![("it.id", false)], cast: "bigint", page_size: 250 };
-        let cursor = pagination::decode_cursor(&c.req)?;
-        let page = pagination::paginate(c.pool(), query, &ordering, cursor, |r: &TagRow| r.id.to_string()).await?;
+        let ordering = Ordering { fields: vec![("it.id", false)], cast: "bigint" };
+        let page = pagination::paginate(c.pool(), &c.req, query, &ordering, |r: &TagRow| r.id.to_string()).await?;
         let results =
             page.items.iter().map(|t| json!({"id": t.id, "key": t.key, "value": t.value, "count": t.count})).collect();
         ok(page.response(&c.req, results))
@@ -303,9 +273,8 @@ pub async fn grouping(State(state): State<ApiState>, Path(pk): Path<String>, req
             "SELECT id, grouping_key, grouping_mechanism FROM issues_grouping WHERE issue_id = ",
         );
         query.push_bind(id);
-        let ordering = Ordering { fields: vec![("id", false)], cast: "bigint", page_size: 250 };
-        let cursor = pagination::decode_cursor(&c.req)?;
-        let page = pagination::paginate(c.pool(), query, &ordering, cursor, |r: &GroupingRow| r.id.to_string()).await?;
+        let ordering = Ordering { fields: vec![("id", false)], cast: "bigint" };
+        let page = pagination::paginate(c.pool(), &c.req, query, &ordering, |r: &GroupingRow| r.id.to_string()).await?;
         let results = page
             .items
             .iter()
@@ -327,14 +296,17 @@ pub async fn event_counts(State(state): State<ApiState>, Path(pk): Path<String>,
     .await
 }
 
-static RESOLVE: Route = triage_route("Resolve");
-static RESOLVE_NEXT: Route = triage_route("Resolve next");
-static RESOLVE_LATEST: Route = triage_route("Resolve latest");
-static REOPEN: Route = triage_route("Reopen");
-static MUTE: Route = triage_route("Mute");
-static MUTE_FOR: Route = triage_route("Mute for");
-static MUTE_UNTIL: Route = triage_route("Mute until");
-static UNMUTE: Route = triage_route("Unmute");
+/// The triage actions by their URL's name, and their views' names.
+static TRIAGE: [(&str, Route); 8] = [
+    ("resolve", triage_route("Resolve")),
+    ("resolve-next", triage_route("Resolve next")),
+    ("resolve-latest", triage_route("Resolve latest")),
+    ("reopen", triage_route("Reopen")),
+    ("mute", triage_route("Mute")),
+    ("mute-for", triage_route("Mute for")),
+    ("mute-until", triage_route("Mute until")),
+    ("unmute", triage_route("Unmute")),
+];
 
 const fn triage_route(name: &'static str) -> Route {
     Route { allow: "POST, OPTIONS", name, methods: &[("POST", Some("issues:triage"))] }
@@ -346,16 +318,8 @@ pub async fn action(
     Path((pk, action)): Path<(String, String)>,
     req: Request,
 ) -> Response {
-    let route = match action.as_str() {
-        "resolve" => &RESOLVE,
-        "resolve-next" => &RESOLVE_NEXT,
-        "resolve-latest" => &RESOLVE_LATEST,
-        "reopen" => &REOPEN,
-        "mute" => &MUTE,
-        "mute-for" => &MUTE_FOR,
-        "mute-until" => &MUTE_UNTIL,
-        "unmute" => &UNMUTE,
-        _ => return Drf::not_found().into_response(),
+    let Some((_, route)) = TRIAGE.iter().find(|(name, _)| *name == action) else {
+        return Drf::not_found().into_response();
     };
     serve(state, req, route, |c| async move {
         let (id, project_id) = guarded_issue(&c, &pk, "issues:triage").await?;
@@ -381,7 +345,7 @@ pub async fn action(
                 if !has_releases {
                     return Err(refuse("Project has no releases."));
                 }
-                let latest = crate::digest::releases::latest_release_version(c.pool(), project_id).await?;
+                let latest = crate::releases::latest_release_version(c.pool(), project_id).await?;
                 Action::ResolvedRelease(latest.unwrap_or_default())
             }
             "reopen" => {
@@ -399,27 +363,14 @@ pub async fn action(
                 let data = c.req.data()?;
                 let data = object_body(&data)?;
                 let mut errors = Errors::default();
-                let period = errors.take("period_name", fields::present(data, "period_name", true).and_then(|v| {
-                    fields::choice_field(v.expect("required"), &[
-                        ("year", 0),
-                        ("month", 1),
-                        ("week", 2),
-                        ("day", 3),
-                        ("hour", 4),
-                        ("minute", 5),
-                    ])
-                }));
-                let nr = errors.take(
-                    "nr_of_periods",
-                    fields::present(data, "nr_of_periods", true)
-                        .and_then(|v| fields::int_field(v.expect("required"), Some(1), None)),
-                );
+                const PERIODS: &[(&str, i32)] =
+                    &[("year", 0), ("month", 1), ("week", 2), ("day", 3), ("hour", 4), ("minute", 5)];
+                let positive = |v: &Value| fields::int_field(v, Some(1), None);
+                let period = required(data, "period_name", |v| fields::choice_field(v, PERIODS));
+                let period = errors.take("period_name", period);
+                let nr = errors.take("nr_of_periods", required(data, "nr_of_periods", positive));
                 let gte = if action == "mute-until" {
-                    errors.take(
-                        "gte_threshold",
-                        fields::present(data, "gte_threshold", true)
-                            .and_then(|v| fields::int_field(v.expect("required"), Some(1), None)),
-                    )
+                    errors.take("gte_threshold", required(data, "gte_threshold", positive))
                 } else {
                     Some(0)
                 };
@@ -428,7 +379,7 @@ pub async fn action(
                 };
                 unresolved()?;
                 unmuted()?;
-                let name = ["year", "month", "week", "day", "hour", "minute"][period as usize];
+                let name = PERIODS[period as usize].0;
                 let spec = if action == "mute-for" {
                     format!("mute_for:{name},{nr},")
                 } else {
@@ -459,9 +410,7 @@ pub async fn comment(State(state): State<ApiState>, req: Request) -> Response {
         let data = c.req.data()?;
         let data = object_body(&data)?;
         let mut errors = Errors::default();
-        let issue = match fields::present(data, "issue", true)
-            .and_then(|v| fields::char_field(v.expect("required"), false, None))
-        {
+        let issue = match required(data, "issue", |v| fields::char_field(v, false, None)) {
             Err(messages) => {
                 errors.add("issue", messages);
                 None
@@ -480,34 +429,20 @@ pub async fn comment(State(state): State<ApiState>, req: Request) -> Response {
                 },
             },
         };
-        let text = errors.take(
-            "comment",
-            fields::present(data, "comment", true).and_then(|v| fields::char_field(v.expect("required"), false, None)),
-        );
+        let text = errors.take("comment", required(data, "comment", |v| fields::char_field(v, false, None)));
         let (Some((issue_id, project_id)), Some(text)) = (issue, text) else {
             return Err(Drf::invalid(errors.into_value()));
         };
         guard_project(&c, "issues:comment", project_id).await?;
         let now = Utc::now().trunc_subsecs(6);
-        let id: i64 = sqlx::query_scalar(
-            "INSERT INTO issues_turningpoint (project_id, issue_id, triggering_event_id, user_id, timestamp, kind,
-                 metadata, comment)
-             VALUES ($1, $2, NULL, NULL, $3, $4, '{}', $5) RETURNING id",
-        )
-        .bind(project_id)
-        .bind(issue_id)
-        .bind(now)
-        .bind(bugsink_db::TurningPointKind::ManualAnnotation as i32)
-        .bind(&text)
-        .fetch_one(c.pool())
-        .await?;
+        let id = triage::pages::insert_comment(c.pool(), project_id, issue_id, None, &text, now).await?;
         Ok(render(
             StatusCode::CREATED,
             &json!({
                 "id": id,
                 "issue": issue_id,
                 "project": project_id,
-                "timestamp": fields::datetime(&now),
+                "timestamp": drf_datetime(&now),
                 "comment": text,
                 "user": null,
             }),
@@ -554,8 +489,7 @@ fn kind_name(kind: i32) -> &'static str {
 pub async fn history(State(state): State<ApiState>, req: Request) -> Response {
     serve(state, req, &HISTORY, |c| async move {
         let identifier = super::required_param(&c.req, "issue")?;
-        let (issue_id, project_id) = issue_by_identifier(&c, identifier).await?;
-        guard_project(&c, "issues:read", project_id).await?;
+        let (issue_id, _) = guarded_issue(&c, identifier, "issues:read").await?;
         let ordering = Ordering::asc_desc(&c.req, &["tp.timestamp", "tp.id"], "timestamptz", true)?;
         let mut query = QueryBuilder::<Postgres>::new(
             "SELECT tp.id, tp.issue_id, tp.project_id, tp.triggering_event_id, tp.user_id, u.first_name, u.last_name,
@@ -563,18 +497,15 @@ pub async fn history(State(state): State<ApiState>, req: Request) -> Response {
              FROM issues_turningpoint tp LEFT JOIN auth_user u ON u.id = tp.user_id WHERE tp.issue_id = ",
         );
         query.push_bind(issue_id);
-        let cursor = pagination::decode_cursor(&c.req)?;
-        let position = |r: &TurningPointRow| py_str_datetime(&r.timestamp);
-        let page = pagination::paginate(c.pool(), query, &ordering, cursor, position).await?;
+        let position = |r: &TurningPointRow| str_datetime(&r.timestamp);
+        let page = pagination::paginate(c.pool(), &c.req, query, &ordering, position).await?;
         let results = page
             .items
             .iter()
             .map(|t| {
                 let display_name = t.username.as_ref().map(|username| {
                     let (first, last) = (t.first_name.as_deref().unwrap_or(""), t.last_name.as_deref().unwrap_or(""));
-                    let full = format!("{first} {last}");
-                    let full = strip(&full);
-                    if full.is_empty() { username.clone() } else { full.to_owned() }
+                    crate::accounts::display_name(first, last, username)
                 });
                 json!({
                     "id": t.id,
@@ -583,7 +514,7 @@ pub async fn history(State(state): State<ApiState>, req: Request) -> Response {
                     "triggering_event": t.triggering_event_id,
                     "user": t.user_id,
                     "user_display_name": display_name,
-                    "timestamp": fields::datetime(&t.timestamp),
+                    "timestamp": drf_datetime(&t.timestamp),
                     "kind": kind_name(t.kind),
                     "comment": t.comment,
                     "metadata": serde_json::from_str::<Value>(&t.metadata).unwrap_or(Value::Null),

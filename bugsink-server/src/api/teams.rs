@@ -2,16 +2,15 @@
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde::Serialize;
 use uuid::Uuid;
 
-use super::{ApiError, ApiResult, ApiState};
-use crate::accounts::{CurrentUser, User};
-use crate::memberships;
+use super::{ApiError, ApiResult, ApiState, TabQuery, created, require_admin};
+use crate::accounts::CurrentUser;
+use crate::memberships::{self, Group, Join};
 use crate::projects::{self, TeamForm, TeamListItem};
 
 pub fn routes() -> Router<ApiState> {
@@ -20,11 +19,6 @@ pub fn routes() -> Router<ApiState> {
         .route("/api/v1/teams/{team_id}", get(detail).patch(edit).delete(delete))
         .route("/api/v1/teams/{team_id}/join", post(join))
         .route("/api/v1/teams/{team_id}/leave", post(leave))
-}
-
-#[derive(Deserialize)]
-struct TabQuery {
-    tab: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -54,22 +48,7 @@ async fn create(
         return Err(ApiError::Forbidden("You are not allowed to create teams".into()));
     }
     let id = projects::create_team(&state.pool, &user, &form).await?.map_err(ApiError::Invalid)?;
-    Ok((StatusCode::CREATED, Json(json!({ "id": id }))).into_response())
-}
-
-/// `team_edit`, `team_members`: team admins only.
-pub(super) async fn require_team_admin(state: &ApiState, user: &User, team_id: Uuid) -> Result<(), ApiError> {
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM teams_team WHERE id = $1)")
-        .bind(team_id)
-        .fetch_one(&state.pool)
-        .await?;
-    if !exists {
-        return Err(ApiError::NotFound);
-    }
-    if !memberships::is_team_admin(&state.pool, user, Some(team_id)).await? {
-        return Err(ApiError::Forbidden("You are not an admin of this team".into()));
-    }
-    Ok(())
+    Ok(created(id))
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -84,7 +63,7 @@ async fn detail(
     CurrentUser { user, .. }: CurrentUser,
     Path(team_id): Path<Uuid>,
 ) -> ApiResult<TeamDetail> {
-    require_team_admin(&state, &user, team_id).await?;
+    require_admin(&state, &user, Group::Team(team_id)).await?;
     let team = sqlx::query_as("SELECT id, name, visibility FROM teams_team WHERE id = $1")
         .bind(team_id)
         .fetch_one(&state.pool)
@@ -98,7 +77,7 @@ async fn edit(
     Path(team_id): Path<Uuid>,
     Json(form): Json<TeamForm>,
 ) -> Result<StatusCode, ApiError> {
-    require_team_admin(&state, &user, team_id).await?;
+    require_admin(&state, &user, Group::Team(team_id)).await?;
     projects::edit_team(&state.pool, team_id, &form).await?.map_err(ApiError::Invalid)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -108,7 +87,7 @@ async fn delete(
     CurrentUser { user, .. }: CurrentUser,
     Path(team_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    require_team_admin(&state, &user, team_id).await?;
+    require_admin(&state, &user, Group::Team(team_id)).await?;
     if !projects::delete_team(&state.pool, team_id).await? {
         return Err(ApiError::Conflict(
             "The team's projects can't be deleted with it: delete them first (upstream fails on this too)".into(),
@@ -122,21 +101,12 @@ async fn join(
     CurrentUser { user, .. }: CurrentUser,
     Path(team_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    match projects::join_team(&state.pool, &user, team_id).await? {
+    match memberships::join_team(&state.pool, &user, team_id).await? {
         None => Err(ApiError::NotFound),
-        Some(false) if !user.is_superuser && !joinable(&state, team_id).await? => {
-            Err(ApiError::Forbidden("This team is not joinable".into()))
-        }
-        Some(false) => Err(ApiError::Conflict("You are already a member of this team".into())),
-        Some(true) => Ok(StatusCode::NO_CONTENT),
+        Some(Join::NotJoinable) => Err(ApiError::Forbidden("This team is not joinable".into())),
+        Some(Join::AlreadyMember) => Err(ApiError::Conflict("You are already a member of this team".into())),
+        Some(Join::Joined) => Ok(StatusCode::NO_CONTENT),
     }
-}
-
-async fn joinable(state: &ApiState, team_id: Uuid) -> sqlx::Result<bool> {
-    sqlx::query_scalar("SELECT visibility <= 1 FROM teams_team WHERE id = $1")
-        .bind(team_id)
-        .fetch_one(&state.pool)
-        .await
 }
 
 /// Leaving needs an accepted membership; the last admin stays (promote someone else, or delete the team).
@@ -145,7 +115,7 @@ async fn leave(
     CurrentUser { user, .. }: CurrentUser,
     Path(team_id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    match projects::leave_team(&state.pool, user.id, team_id, true).await? {
+    match memberships::leave_team(&state.pool, user.id, team_id, true).await? {
         None => Err(ApiError::NotFound),
         Some(false) => Err(ApiError::Conflict(LAST_ADMIN.into())),
         Some(true) => Ok(StatusCode::NO_CONTENT),

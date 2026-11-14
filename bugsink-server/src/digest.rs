@@ -11,14 +11,8 @@
 //! SKIPPED(parity) (optional extras, see the README): minidumps, `VALIDATE_ON_DIGEST`, file-based event storage.
 
 mod counts;
-pub(crate) mod releases;
 pub mod retention;
 mod tags;
-mod user_agent;
-
-/// For `tools/parity/user_agents.sh`.
-#[doc(hidden)]
-pub use tags::contexts_enriched_with_user_agent;
 
 use bugsink_db::{PgPool, Postgres, Transaction, TurningPointKind};
 use chrono::{DateTime, TimeDelta, Utc};
@@ -29,12 +23,12 @@ use uuid::Uuid;
 
 use crate::alerts::{self, Alert};
 use crate::event_counter::{Counted, Period, Threshold, check_for_thresholds};
-use crate::grouping::py::{isoformat, json_dumps, py_str, take_chars, truthy};
 use crate::grouping::{self, GroupingError, KeyWithMechanism};
+use crate::issues::NewTurningPoint;
 use crate::protocol::event::parse_timestamp;
+use crate::py::{isoformat, json_dumps, py_str, take_chars, truthy};
 use crate::quota::{self, QuotaSettings, QuotaState};
-
-pub const JOB_KIND: &str = "digest";
+use crate::releases;
 
 const GROUPING_TRANSITION_PERIOD: TimeDelta = TimeDelta::days(30);
 
@@ -46,6 +40,10 @@ pub struct DigestJob {
     pub ingested_at: DateTime<Utc>,
     pub remote_addr: Option<String>,
     pub event: Value,
+}
+
+impl crate::tasks::Job for DigestJob {
+    const KIND: &str = "digest";
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -70,26 +68,16 @@ impl From<GroupingError> for DigestError {
 }
 
 /// Job handler, for `crate::tasks::Registry::register`.
-pub async fn handle_job(pool: PgPool, payload: Value, quotas: QuotaSettings) -> anyhow::Result<()> {
-    let job: DigestJob = serde_json::from_value(payload)?;
+pub async fn handle_job(pool: PgPool, job: DigestJob, quotas: QuotaSettings) -> anyhow::Result<()> {
     let event_id = job.event_id;
     match digest(&pool, job, Utc::now(), &quotas).await {
-        Ok(_) => Ok(()),
+        Ok(()) => Ok(()),
         Err(DigestError::Drop(reason)) => {
             tracing::warn!(%event_id, %reason, "event dropped in digest");
             Ok(())
         }
         Err(DigestError::Retry(e)) => Err(e),
     }
-}
-
-#[derive(Debug, PartialEq)]
-pub enum Outcome {
-    Digested { issue_id: Uuid, issue_created: bool },
-    ProjectGone,
-    ZeroRetention,
-    OverQuota,
-    Duplicate,
 }
 
 pub(crate) struct Project {
@@ -137,12 +125,12 @@ pub async fn digest(
     job: DigestJob,
     digested_at: DateTime<Utc>,
     quotas: &QuotaSettings,
-) -> Result<Outcome, DigestError> {
+) -> Result<(), DigestError> {
     let mut tx = pool.begin().await?;
 
     // Serializes digestion per project (upstream: one global write lock): counters below are read-modify-write.
     let Some(mut project) = lock_project(&mut tx, job.project_id).await? else {
-        return Ok(Outcome::ProjectGone);
+        return Ok(());
     };
     // `get_retention_max_event_count` (only read below, never written back)
     project.retention_max_event_count = quotas.retention_max_event_count(project.retention_max_event_count);
@@ -152,7 +140,7 @@ pub async fn digest(
             retention::enqueue_delete_by_age(&mut tx, project.id).await?;
             tx.commit().await?;
         }
-        return Ok(Outcome::ZeroRetention);
+        return Ok(());
     }
     // Upstream relies on the (project, event_id) unique constraint and rolls back; checking first is equivalent.
     let duplicate: bool =
@@ -162,7 +150,7 @@ pub async fn digest(
             .fetch_one(&mut *tx)
             .await?;
     if duplicate {
-        return Ok(Outcome::Duplicate);
+        return Ok(());
     }
 
     // Installation first, then the project (whose count this increments). Over quota, the event is dropped but the
@@ -179,7 +167,7 @@ pub async fn digest(
         .await?
     {
         tx.commit().await?;
-        return Ok(Outcome::OverQuota);
+        return Ok(());
     }
 
     let data = &job.event;
@@ -251,34 +239,24 @@ pub async fn digest(
     )
     .await?;
 
+    // Events that trigger a turning point are kept.
     let mut never_evict = false;
+    let at = job.ingested_at;
     if issue_created {
-        insert_turning_point(&mut tx, project.id, issue.id, Some(event.id), job.ingested_at, TurningPointKind::FirstSeen, "{}")
-            .await?;
+        turning_point(&mut tx, &project, issue.id, event.id, at, json!({}), Alert::NewIssue).await?;
         never_evict = true;
-        if project.alert_on_new_issue {
-            alerts::enqueue(&mut tx, issue.id, Alert::NewIssue).await?;
-        }
     } else {
-        if releases::issue_is_regression(&mut tx, &project, &issue, &event.release).await? {
-            insert_turning_point(&mut tx, project.id, issue.id, Some(event.id), job.ingested_at, TurningPointKind::Regressed, "{}")
-                .await?;
+        if issue_is_regression(&mut tx, &project, &issue, &event.release).await? {
+            turning_point(&mut tx, &project, issue.id, event.id, at, json!({}), Alert::Regression).await?;
             never_evict = true;
-            if project.alert_on_regression {
-                alerts::enqueue(&mut tx, issue.id, Alert::Regression).await?;
-            }
             issue.reopen();
         }
         if let Some(unmute_after) = issue.unmute_after.filter(|after| issue.is_muted && digested_at > *after) {
             issue.unmute();
             let metadata = json!({"mute_for": {"unmute_after": isoformat(&unmute_after)}});
-            insert_turning_point(&mut tx, project.id, issue.id, Some(event.id), job.ingested_at, TurningPointKind::Unmuted, &json_dumps(&metadata))
-                .await?;
-            never_evict = true; // events that trigger a turning point are kept
-            if project.alert_on_unmute {
-                let unmute_reason = alerts::unmute_reason_mute_for(unmute_after);
-                alerts::enqueue(&mut tx, issue.id, Alert::Unmute { unmute_reason }).await?;
-            }
+            let unmute_reason = alerts::unmute_reason_mute_for(unmute_after);
+            turning_point(&mut tx, &project, issue.id, event.id, at, metadata, Alert::Unmute { unmute_reason }).await?;
+            never_evict = true;
         }
     }
     if let Some(condition) = volume_based_unmute(&mut tx, &mut issue, digested_at).await?
@@ -286,13 +264,9 @@ pub async fn digest(
     {
         issue.unmute();
         let metadata = json!({"mute_until": condition});
-        insert_turning_point(&mut tx, project.id, issue.id, Some(event.id), job.ingested_at, TurningPointKind::Unmuted, &json_dumps(&metadata))
-            .await?;
+        let unmute_reason = alerts::unmute_reason_mute_until(&condition);
+        turning_point(&mut tx, &project, issue.id, event.id, at, metadata, Alert::Unmute { unmute_reason }).await?;
         never_evict = true;
-        if project.alert_on_unmute {
-            let unmute_reason = alerts::unmute_reason_mute_until(&condition);
-            alerts::enqueue(&mut tx, issue.id, Alert::Unmute { unmute_reason }).await?;
-        }
     }
 
     if never_evict {
@@ -307,7 +281,7 @@ pub async fn digest(
     tags::digest_tags(&mut tx, data, &event, issue.id).await?;
 
     tx.commit().await?;
-    Ok(Outcome::Digested { issue_id: issue.id, issue_created })
+    Ok(())
 }
 
 async fn lock_project(tx: &mut Transaction<'_, Postgres>, project_id: i64) -> sqlx::Result<Option<Project>> {
@@ -673,27 +647,69 @@ fn nonzero_leading_bits(n: u64) -> i32 {
     if n == 0 { 0 } else { (64 - n.leading_zeros() - n.trailing_zeros()) as i32 }
 }
 
-pub(crate) async fn insert_turning_point(
+/// `issues/regressions.py::issue_is_regression`: given a new event at `current_release`, was the issue resolved for
+/// that release?
+async fn issue_is_regression(
     tx: &mut Transaction<'_, Postgres>,
-    project_id: i64,
+    project: &Project,
+    issue: &Issue,
+    current_release: &str,
+) -> Result<bool, DigestError> {
+    if !issue.is_resolved || issue.is_resolved_by_next_release {
+        return Ok(false);
+    }
+    if issue.is_resolved_unconditionally || !project.has_releases {
+        return Ok(true);
+    }
+    let sorted = releases::ordered_releases(&mut **tx, project.id).await?;
+    let fixed_at = releases::parse_lines(&issue.fixed_at);
+    let events_at = releases::parse_lines(&issue.events_at);
+
+    let mut marked_as_resolved = false;
+    for release in &sorted {
+        if fixed_at.contains(&release.version.as_str()) {
+            marked_as_resolved = true;
+        } else if events_at.contains(&release.version.as_str()) {
+            marked_as_resolved = false;
+        }
+        if release.version == current_release {
+            return Ok(marked_as_resolved);
+        }
+    }
+    // Upstream raises here too (e.g. a release name that sanitizing changed).
+    Err(DigestError::Drop(format!("can't find release {current_release:?}")))
+}
+
+/// The turning point an event (ingested at `at`) triggered, then the alert if the project wants that kind.
+async fn turning_point(
+    tx: &mut Transaction<'_, Postgres>,
+    project: &Project,
     issue_id: Uuid,
-    triggering_event_id: Option<Uuid>,
-    timestamp: DateTime<Utc>,
-    kind: TurningPointKind,
-    metadata: &str,
-) -> sqlx::Result<()> {
-    sqlx::query(
-        "INSERT INTO issues_turningpoint (project_id, issue_id, triggering_event_id, user_id, timestamp, kind, metadata, comment)
-         VALUES ($1, $2, $3, NULL, $4, $5, $6, '')",
-    )
-    .bind(project_id)
-    .bind(issue_id)
-    .bind(triggering_event_id)
-    .bind(timestamp)
-    .bind(kind as i32)
-    .bind(metadata)
-    .execute(&mut **tx)
-    .await?;
+    event_id: Uuid,
+    at: DateTime<Utc>,
+    metadata: Value,
+    alert: Alert,
+) -> anyhow::Result<()> {
+    let (kind, wanted) = match alert {
+        Alert::NewIssue => (TurningPointKind::FirstSeen, project.alert_on_new_issue),
+        Alert::Regression => (TurningPointKind::Regressed, project.alert_on_regression),
+        Alert::Unmute { .. } => (TurningPointKind::Unmuted, project.alert_on_unmute),
+    };
+    let metadata = json_dumps(&metadata);
+    let turning_point = NewTurningPoint {
+        project_id: project.id,
+        issue_id,
+        kind,
+        timestamp: at,
+        triggering_event_id: Some(event_id),
+        user_id: None,
+        metadata: &metadata,
+        comment: "",
+    };
+    turning_point.insert(&mut **tx).await?;
+    if wanted {
+        alerts::enqueue(tx, issue_id, alert).await?;
+    }
     Ok(())
 }
 

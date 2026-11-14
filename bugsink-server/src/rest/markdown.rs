@@ -7,7 +7,7 @@
 use serde_json::Value;
 
 use crate::event_display::{mark_debug_ids, stacktrace_entries, thread_stacktrace_entries};
-use crate::grouping::py::{py_str, rstrip, strip, truthy};
+use crate::py::{py_str, rstrip, strip, truthy};
 
 /// `render_stacktrace_md(event, in_app_only=False, include_locals=True)`; `title` is the event's.
 pub fn render(data: &Value, platform: &str, title: &str) -> String {
@@ -105,8 +105,8 @@ fn py_int(v: &Value) -> Option<i64> {
     match v {
         Value::Bool(b) => Some(i64::from(*b)),
         Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f.trunc() as i64)),
-        Value::String(s) => match super::fields::py_int(s) {
-            Some(super::fields::PyInt::Small(n)) => Some(n),
+        Value::String(s) => match crate::py::py_int(s) {
+            Some(crate::py::PyInt::Small(n)) => Some(n),
             _ => None,
         },
         _ => None,

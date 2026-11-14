@@ -1,56 +1,15 @@
 //! `tags/utils.py::deduce_tags` and `tags/models.py::digest_tags`.
 
 use bugsink_db::{Postgres, Transaction};
-use crate::grouping::main_exception;
-use crate::grouping::py::{py_str, take_chars, truthy};
-use serde_json::{Map, Value, json};
+use crate::grouping::{get_path, main_exception};
+use crate::py::{py_str, take_chars, truthy};
+use serde_json::{Map, Value};
 use uuid::Uuid;
 
 use super::StoredEvent;
-use super::user_agent;
+use crate::user_agent::contexts_enriched_with_user_agent;
 
 const MAX_EVENT_TAGS: usize = 100;
-
-fn path<'v>(data: &'v Value, keys: &[&str]) -> Option<&'v Value> {
-    let mut cur = data;
-    for k in keys {
-        cur = cur.as_object()?.get(*k)?;
-    }
-    (!cur.is_null()).then_some(cur)
-}
-
-/// `get_contexts_enriched_with_ua`: the event's contexts, with `browser`, `os` and `device` derived from the request's
-/// User-Agent header where the SDK didn't send them. If that fails, the contexts as they are.
-pub fn contexts_enriched_with_user_agent(data: &Value) -> Value {
-    let mut contexts = data.get("contexts").filter(|c| c.is_object()).cloned().unwrap_or_else(|| json!({}));
-    let headers = data.get("request").filter(|r| r.is_object()).and_then(|r| r.get("headers")).filter(|h| h.is_object());
-    let ua = match headers.and_then(|h| h.get("User-Agent")) {
-        None | Some(Value::Null) => return contexts,
-        Some(Value::Array(values)) => match values.first() {
-            None => return contexts,
-            Some(first) => first, // assumed to be the only one
-        },
-        Some(ua) => ua,
-    };
-    let parsed = match ua.as_str().ok_or("TypeError: user agent is not a string").and_then(|ua| {
-        user_agent::parse(ua).map_err(|e| e.0)
-    }) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            tracing::warn!(user_agent = %ua, error, "failed to enrich contexts with User-Agent info");
-            return contexts;
-        }
-    };
-    let contexts_map = contexts.as_object_mut().expect("object");
-    contexts_map
-        .entry("browser")
-        .or_insert_with(|| json!({"name": parsed.browser_family, "version": parsed.browser_version}));
-    contexts_map.entry("os").or_insert_with(|| json!({"name": parsed.os_family, "version": parsed.os_version}));
-    contexts_map.entry("device").or_insert_with(|| {
-        json!({"family": parsed.device_family, "model": parsed.device_model, "brand": parsed.device_brand})
-    });
-    contexts
-}
 
 /// `value not in [None, ""]`
 fn present(v: Option<&Value>) -> Option<&Value> {
@@ -79,16 +38,16 @@ fn deduce_tags(data: &Value) -> Map<String, Value> {
     };
 
     for key in ["server_name", "release", "environment", "transaction"] {
-        if let Some(v) = present(path(data, &[key])) {
+        if let Some(v) = present(get_path(data, &[key])) {
             tags.insert(key.into(), convert(v));
         }
     }
-    if let Some(url) = present(path(data, &["request", "url"])) {
+    if let Some(url) = present(get_path(data, &["request", "url"])) {
         let url = py_str(url);
         let without = url.split('#').next().unwrap_or("").split('?').next().unwrap_or("");
         tags.insert("url".into(), Value::String(without.into()));
     }
-    if let Some(v) = main_exception(data).ok().flatten().and_then(|e| present(path(e, &["mechanism", "handled"]))) {
+    if let Some(v) = main_exception(data).ok().flatten().and_then(|e| present(get_path(e, &["mechanism", "handled"]))) {
         tags.insert("handled".into(), convert(v));
     }
 
@@ -101,7 +60,7 @@ fn deduce_tags(data: &Value) -> Map<String, Value> {
         ("os.name", ["os", "name"]),
         ("os.version", ["os", "version"]),
     ] {
-        if let Some(v) = present(path(contexts, &keys)) {
+        if let Some(v) = present(get_path(contexts, &keys)) {
             tags.insert(tag.into(), convert(v));
         }
     }

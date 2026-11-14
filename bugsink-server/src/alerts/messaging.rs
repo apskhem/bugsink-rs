@@ -19,13 +19,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::webhook::Failure;
+use super::webhook::{Failure, WebhookSettings, post_json};
 use super::{Alert, AlertSettings, IssueForAlert};
-
-pub const JOB_KIND: &str = "messaging_alert";
-
-/// The kinds upstream 2.6.3 knows (`get_alert_service_kind_choices`).
-const KINDS: &[&str] = &["discord", "google_chat", "mattermost", "msteams", "slack", "telegram", "custom"];
+use crate::py::{json_dumps, take_chars};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MessagingJob {
@@ -38,10 +34,14 @@ pub struct MessagingJob {
     pub alert: Alert,
 }
 
+impl crate::tasks::Job for MessagingJob {
+    const KIND: &str = "messaging_alert";
+}
+
 impl MessagingJob {
     /// None (logged) for what upstream's `get_backend()` / `json.loads(config)` would fail on.
     pub(super) fn new(service_config_id: i64, kind: String, config: &str, issue_id: Uuid, alert: &Alert) -> Option<Self> {
-        if !KINDS.contains(&kind.as_str()) {
+        if !super::setup::KINDS.iter().any(|(k, _)| *k == kind) {
             tracing::warn!(service_config_id, kind, "unknown messaging service kind; not sending");
             return None;
         }
@@ -61,38 +61,63 @@ pub(super) struct AlertMessage<'a> {
     pub config: &'a Value,
 }
 
-impl AlertMessage<'_> {
-    fn config_str(&self, key: &str) -> Result<&str, Failure> {
-        self.config.get(key).and_then(Value::as_str).ok_or_else(|| Failure {
-            error_type: "KeyError",
-            message: format!("'{key}'"),
-            response: None,
+/// What a backend posts where: the service's `webhook_url`, or Telegram's API with the bot token in the URL (masked in
+/// failures).
+struct Request {
+    url: String,
+    data: Value,
+    bot_token: Option<String>,
+}
+
+impl Request {
+    fn webhook(config: &Value, data: Value) -> Result<Self, Failure> {
+        Ok(Self { url: config_str(config, "webhook_url")?.to_owned(), data, bot_token: None })
+    }
+
+    async fn send(self, webhooks: &WebhookSettings) -> Result<(), Failure> {
+        let result = post_json(webhooks, &self.url, json_dumps(&self.data)).await;
+        result.map_err(|failure| match &self.bot_token {
+            Some(bot_token) => telegram::mask_token(failure, bot_token),
+            None => failure,
         })
     }
 }
 
-/// Job handler for `JOB_KIND`. Never retried: a failure is recorded on the service instead.
-pub async fn handle_job(pool: PgPool, payload: Value, settings: Arc<AlertSettings>) -> anyhow::Result<()> {
-    let job: MessagingJob = serde_json::from_value(payload)?;
+/// `config[key]`, a string.
+fn config_str<'c>(config: &'c Value, key: &str) -> Result<&'c str, Failure> {
+    config.get(key).and_then(Value::as_str).ok_or_else(|| Failure::key_error(key))
+}
+
+/// Job handler. Never retried: a failure is recorded on the service instead.
+pub async fn handle_job(pool: PgPool, job: MessagingJob, settings: Arc<AlertSettings>) -> anyhow::Result<()> {
     let Some(issue) = IssueForAlert::load(&pool, job.issue_id).await? else {
         return Ok(()); // deleted since
     };
-    let message = AlertMessage { issue: &issue, alert: &job.alert, settings: &settings, config: &job.config };
-    let result = match job.kind.as_str() {
-        "discord" => discord::send_alert(&message).await,
-        "google_chat" => google_chat::send_alert(&message).await,
-        "mattermost" => mattermost::send_alert(&message).await,
-        "msteams" => msteams::send_alert(&message).await,
-        "slack" => slack::send_alert(&message).await,
-        "telegram" => telegram::send_alert(&message).await,
+    let m = AlertMessage { issue: &issue, alert: &job.alert, settings: &settings, config: &job.config };
+    let request = match job.kind.as_str() {
+        "telegram" => telegram::alert_request(&m),
         "custom" => match custom::IssueData::load(&pool, job.issue_id).await? {
-            Some(data) => custom::send_alert(&message, &data).await,
+            Some(data) => Request::webhook(&job.config, custom::payload(&m, &data)),
             None => return Ok(()), // deleted since
         },
-        other => {
-            tracing::warn!(kind = other, "unknown messaging service kind; not sending");
-            return Ok(());
+        kind => {
+            let data = match kind {
+                "discord" => discord::payload(&m),
+                "google_chat" => google_chat::payload(&m),
+                "mattermost" => mattermost::payload(&m),
+                "msteams" => msteams::payload(&m),
+                "slack" => slack::payload(&m),
+                other => {
+                    tracing::warn!(kind = other, "unknown messaging service kind; not sending");
+                    return Ok(());
+                }
+            };
+            Request::webhook(&job.config, data)
         }
+    };
+    let result = match request {
+        Ok(request) => request.send(&settings.webhooks).await,
+        Err(failure) => Err(failure),
     };
     if let Err(failure) = &result {
         tracing::warn!(service_config_id = job.service_config_id, error = %failure.message, "messaging alert failed");
@@ -100,8 +125,6 @@ pub async fn handle_job(pool: PgPool, payload: Value, settings: Arc<AlertSetting
     store_outcome(&pool, job.service_config_id, result.err()).await?;
     Ok(())
 }
-
-pub const TEST_JOB_KIND: &str = "messaging_test";
 
 /// "Send test message" (`send_test_message`): what upstream passes its task, as of when the button was pressed.
 #[derive(Debug, Serialize, Deserialize)]
@@ -113,41 +136,38 @@ pub struct TestJob {
     pub display_name: String,
 }
 
-/// Job handler for `TEST_JOB_KIND`; like alerts, the outcome is stored on the service.
-pub async fn handle_test_job(pool: PgPool, payload: Value, settings: Arc<AlertSettings>) -> anyhow::Result<()> {
-    let job: TestJob = serde_json::from_value(payload)?;
+impl crate::tasks::Job for TestJob {
+    const KIND: &str = "messaging_test";
+}
+
+/// Job handler; like alerts, the outcome is stored on the service.
+pub async fn handle_test_job(pool: PgPool, job: TestJob, settings: Arc<AlertSettings>) -> anyhow::Result<()> {
     let (project, display) = (job.project_name.as_str(), job.display_name.as_str());
-    let (url, data, bot_token) = match job.kind.as_str() {
-        "telegram" => match telegram::test_request(&job.config, project, display) {
-            Ok((url, data, bot_token)) => (url, data, Some(bot_token)),
-            Err(failure) => return Ok(store_outcome(&pool, job.service_config_id, Some(failure)).await?),
-        },
-        kind => {
-            let Some(url) = job.config.get("webhook_url").and_then(Value::as_str) else {
-                let failure = Failure { error_type: "KeyError", message: "'webhook_url'".into(), response: None };
-                return Ok(store_outcome(&pool, job.service_config_id, Some(failure)).await?);
-            };
-            let data = match kind {
-                "slack" => slack::test_payload(project, display),
-                "discord" => discord::test_payload(project, display),
-                "google_chat" => google_chat::test_payload(project, display),
-                "mattermost" => mattermost::test_payload(project, display, job.config.get("channel")),
-                "msteams" => msteams::test_payload(project, display),
-                "custom" => custom::test_payload(project),
-                other => {
-                    tracing::warn!(kind = other, "unknown messaging service kind; not sending");
-                    return Ok(());
-                }
-            };
-            (url.to_owned(), data, None)
-        }
+    let data = match job.kind.as_str() {
+        "slack" => Some(slack::test_payload(project, display)),
+        "discord" => Some(discord::test_payload(project, display)),
+        "google_chat" => Some(google_chat::test_payload(project, display)),
+        "mattermost" => Some(mattermost::test_payload(project, display, job.config.get("channel"))),
+        "msteams" => Some(msteams::test_payload(project, display)),
+        "custom" => Some(custom::test_payload(project)),
+        _ => None,
     };
-    let result = super::webhook::post_json(&settings.webhooks, &url, crate::grouping::py::json_dumps(&data))
-        .await
-        .map_err(|f| match &bot_token {
-            Some(token) => telegram::masked(f, token),
-            None => f,
-        });
+    let request = match (job.kind.as_str(), data) {
+        ("telegram", _) => telegram::test_request(&job.config, project, display),
+        (_, Some(data)) => Request::webhook(&job.config, data),
+        // an unknown kind: a missing URL is still the failure stored
+        (kind, None) => match config_str(&job.config, "webhook_url") {
+            Ok(_) => {
+                tracing::warn!(kind, "unknown messaging service kind; not sending");
+                return Ok(());
+            }
+            Err(failure) => Err(failure),
+        },
+    };
+    let result = match request {
+        Ok(request) => request.send(&settings.webhooks).await,
+        Err(failure) => Err(failure),
+    };
     store_outcome(&pool, job.service_config_id, result.err()).await?;
     Ok(())
 }
@@ -157,7 +177,7 @@ async fn store_outcome(pool: &PgPool, service_config_id: i64, failure: Option<Fa
     let (status, text, is_json) = match failure.as_ref().and_then(|f| f.response.as_ref()) {
         Some((status, text)) => (
             Some(i32::from(*status)),
-            Some(text.chars().take(2000).collect::<String>()),
+            Some(take_chars(text, 2000)),
             Some(serde_json::from_str::<Value>(text).is_ok()),
         ),
         None => (None, None, None),

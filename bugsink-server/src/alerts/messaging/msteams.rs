@@ -3,8 +3,7 @@
 use serde_json::{Value, json};
 
 use super::AlertMessage;
-use crate::alerts::webhook::{Failure, post_json};
-use crate::grouping::py::{json_dumps, truncatechars};
+use crate::py::{truncatechars, truthy};
 
 /// Adaptive Card TextBlocks render a subset of markdown.
 fn safe_markdown(text: &str) -> String {
@@ -25,7 +24,7 @@ fn as_message(body: Vec<Value>, actions: Value) -> Value {
         "version": "1.4",
         "body": body,
     });
-    if crate::grouping::py::truthy(&actions) {
+    if truthy(&actions) {
         content["actions"] = actions;
     }
     json!({
@@ -34,7 +33,8 @@ fn as_message(body: Vec<Value>, actions: Value) -> Value {
     })
 }
 
-fn payload(m: &AlertMessage<'_>) -> Value {
+/// `msteams_backend_send_alert`.
+pub(super) fn payload(m: &AlertMessage<'_>) -> Value {
     let mut body = vec![
         json!({
             "type": "TextBlock",
@@ -45,18 +45,13 @@ fn payload(m: &AlertMessage<'_>) -> Value {
         }),
         json!({"type": "TextBlock", "text": format!("{} issue", m.alert.reason()), "wrap": true}),
     ];
-    if let Some(unmute_reason) = m.alert.unmute_reason().filter(|r| !r.is_empty()) {
+    if let Some(unmute_reason) = m.alert.unmute_reason() {
         body.push(json!({"type": "TextBlock", "text": safe_markdown(unmute_reason), "wrap": true}));
     }
     body.push(json!({"type": "FactSet", "facts": [{"title": "project", "value": safe_markdown(&m.issue.project_name)}]}));
     as_message(body, json!([{"type": "Action.OpenUrl", "title": "view on Bugsink", "url": m.issue.url(m.settings)}]))
 }
 
-/// `msteams_backend_send_alert`.
-pub(super) async fn send_alert(m: &AlertMessage<'_>) -> Result<(), Failure> {
-    let webhook_url = m.config_str("webhook_url")?;
-    post_json(&m.settings.webhooks, webhook_url, json_dumps(&payload(m))).await
-}
 
 /// `msteams_backend_send_test_message`.
 pub(super) fn test_payload(project_name: &str, display_name: &str) -> Value {
@@ -77,6 +72,7 @@ pub(super) fn test_payload(project_name: &str, display_name: &str) -> Value {
 mod tests {
     use super::*;
     use crate::alerts::messaging::test_parts;
+    use crate::py::json_dumps;
 
     #[test]
     fn payload_like_upstream() {

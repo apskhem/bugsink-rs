@@ -3,15 +3,15 @@
 use serde_json::{Value, json};
 
 use super::AlertMessage;
-use crate::alerts::webhook::{Failure, post_json};
-use crate::grouping::py::{json_dumps, truncatechars};
+use crate::py::truncatechars;
 
 /// Backslash-escapes Google Chat's formatting characters.
 fn safe_markdown(text: &str) -> String {
     "\\*_~`<>".chars().fold(text.to_string(), |text, c| text.replace(c, &format!("\\{c}")))
 }
 
-fn payload(m: &AlertMessage<'_>) -> Value {
+/// `google_chat_backend_send_alert` (`_post_text`).
+pub(super) fn payload(m: &AlertMessage<'_>) -> Value {
     let mut text = format!(
         "*{}*\n{} issue\n• *Project*: {}\n<{}|view on Bugsink>",
         safe_markdown(&truncatechars(&m.issue.title, 256)),
@@ -19,17 +19,12 @@ fn payload(m: &AlertMessage<'_>) -> Value {
         safe_markdown(&m.issue.project_name),
         m.issue.url(m.settings),
     );
-    if let Some(unmute_reason) = m.alert.unmute_reason().filter(|r| !r.is_empty()) {
+    if let Some(unmute_reason) = m.alert.unmute_reason() {
         text += &format!("\n*Unmute Reason*: {}", safe_markdown(unmute_reason));
     }
     json!({"text": text})
 }
 
-/// `google_chat_backend_send_alert` (`_post_text`).
-pub(super) async fn send_alert(m: &AlertMessage<'_>) -> Result<(), Failure> {
-    let webhook_url = m.config_str("webhook_url")?;
-    post_json(&m.settings.webhooks, webhook_url, json_dumps(&payload(m))).await
-}
 
 /// `google_chat_backend_send_test_message`.
 pub(super) fn test_payload(project_name: &str, display_name: &str) -> Value {
@@ -47,6 +42,7 @@ pub(super) fn test_payload(project_name: &str, display_name: &str) -> Value {
 mod tests {
     use super::*;
     use crate::alerts::messaging::test_parts;
+    use crate::py::json_dumps;
 
     #[test]
     fn payload_like_upstream() {

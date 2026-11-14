@@ -21,7 +21,7 @@ pub struct WebhookSettings {
     #[arg(long, env = "ALERTS_WEBHOOK_DENY_LIST", default_value = "", value_parser = parse_destinations)]
     pub alerts_webhook_deny_list: Destinations,
     /// Refuse destinations that resolve to non-global (private, loopback, ...) addresses.
-    #[arg(long, env = "ALERTS_WEBHOOK_DENY_NON_GLOBAL", default_value = "true", value_parser = super::py_bool)]
+    #[arg(long, env = "ALERTS_WEBHOOK_DENY_NON_GLOBAL", default_value = "true", value_parser = crate::py::py_bool)]
     pub alerts_webhook_deny_non_global: bool,
 }
 
@@ -211,6 +211,11 @@ pub struct Failure {
 impl Failure {
     fn value_error(message: impl Into<String>) -> Self {
         Self { error_type: "ValueError", message: message.into(), response: None }
+    }
+
+    /// A missing key in the service's config.
+    pub fn key_error(key: &str) -> Self {
+        Self { error_type: "KeyError", message: format!("'{key}'"), response: None }
     }
 }
 

@@ -9,7 +9,6 @@ use clap::{Args, Parser, Subcommand};
 use tokio::sync::watch;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
-use uuid::Uuid;
 
 #[derive(Parser)]
 #[command(name = "bugsink", about = "Self-hosted error tracking (Rust rewrite of Bugsink)")]
@@ -174,22 +173,16 @@ async fn serve(pool: PgPool, args: ServeArgs, settings: Settings) -> anyhow::Res
 async fn create_project(pool: &PgPool, name: &str, base_url: &str) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
     let slug = projects::unique_slug(&mut tx, name).await?;
-    // Django model defaults are not database defaults: every NOT NULL column is spelled out, with upstream's values.
-    let (id, key): (i64, Uuid) = sqlx::query_as(
-        "INSERT INTO projects_project (
-             name, slug, sentry_key, is_deleted, has_releases, issue_count, digested_event_count, stored_event_count,
-             alert_on_new_issue, alert_on_regression, alert_on_unmute, visibility, quota_exceeded_reason,
-             next_quota_check, retention_max_event_count, grouping_mechanism)
-         VALUES ($1, $2, gen_random_uuid(), false, false, 0, 0, 0, true, true, true, $3, 'null', 0, 10000, $4)
-         RETURNING id, sentry_key",
-    )
-    .bind(name)
-    .bind(&slug)
-    .bind(bugsink_db::PROJECT_VISIBILITY_TEAM_MEMBERS)
-    .bind(grouping::CURRENT_MECHANISM)
-    .fetch_one(&mut *tx)
-    .await
-    .context("creating project")?;
+    let new = projects::NewProject {
+        team_id: None,
+        name,
+        slug: &slug,
+        alerts: [true; 3],
+        visibility: bugsink_db::PROJECT_VISIBILITY_TEAM_MEMBERS,
+        retention_max_event_count: 10_000,
+        grouping_mechanism: grouping::CURRENT_MECHANISM,
+    };
+    let (id, key) = projects::insert_project(&mut tx, &new).await.context("creating project")?;
     tx.commit().await?;
 
     println!("{}", projects::dsn(base_url, id, key));

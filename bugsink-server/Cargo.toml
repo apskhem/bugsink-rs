@@ -20,7 +20,6 @@ chrono.workspace = true
 clap.workspace = true
 fancy-regex.workspace = true
 flate2.workspace = true
-futures.workspace = true
 hmac.workspace = true
 lettre.workspace = true
 rand.workspace = true

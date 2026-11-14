@@ -2,14 +2,14 @@
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{ApiError, ApiResult, ApiState};
+use super::{ApiError, ApiResult, ApiState, created};
 use crate::accounts::{CurrentUser, User};
 use crate::installation::{self, AuthTokenForm, Deleted};
 
@@ -136,7 +136,7 @@ async fn create_auth_token(
     Json(form): Json<AuthTokenForm>,
 ) -> Result<Response, ApiError> {
     let id = installation::create_auth_token(&state.pool, &user, &form).await?.map_err(ApiError::Invalid)?;
-    Ok((StatusCode::CREATED, Json(json!({ "id": id }))).into_response())
+    Ok(created(id))
 }
 
 async fn revoke_auth_token(

@@ -3,19 +3,18 @@
 
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use chrono::Utc;
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde::Serialize;
 use uuid::Uuid;
 
-use super::{ApiError, ApiResult, ApiState, require_project_access};
+use super::{ApiError, ApiResult, ApiState, TabQuery, created, require_admin, require_project_access};
 use crate::accounts::{CurrentUser, User};
 use crate::alerts::{messaging, setup};
 use crate::issues::pages;
-use crate::memberships::{self, Group};
+use crate::memberships::{self, Group, Join};
 use crate::projects::{self, ProjectForm, ProjectListItem, ProjectSettings};
 
 pub fn routes() -> Router<ApiState> {
@@ -32,11 +31,6 @@ pub fn routes() -> Router<ApiState> {
             axum::routing::patch(edit_service).delete(remove_service),
         )
         .route("/api/v1/projects/{project_id}/messaging-services/{service_id}/test", post(test_service))
-}
-
-#[derive(Deserialize)]
-struct TabQuery {
-    tab: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -111,23 +105,7 @@ async fn create(
     let id = projects::create_project(&state.pool, &state.settings.quotas, &user, &teams, &form)
         .await?
         .map_err(ApiError::Invalid)?;
-    Ok((StatusCode::CREATED, Json(json!({ "id": id }))).into_response())
-}
-
-/// `_check_project_admin` on a project that isn't deleted.
-pub(super) async fn require_project_admin(state: &ApiState, user: &User, project_id: i64) -> Result<(), ApiError> {
-    let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM projects_project WHERE id = $1 AND NOT is_deleted)")
-            .bind(project_id)
-            .fetch_one(&state.pool)
-            .await?;
-    if !exists {
-        return Err(ApiError::NotFound);
-    }
-    if !memberships::is_project_admin(&state.pool, user, project_id).await? {
-        return Err(ApiError::Forbidden("You are not an admin of this project".into()));
-    }
-    Ok(())
+    Ok(created(id))
 }
 
 async fn settings(
@@ -135,7 +113,7 @@ async fn settings(
     CurrentUser { user, .. }: CurrentUser,
     Path(project_id): Path<i64>,
 ) -> ApiResult<ProjectSettings> {
-    require_project_admin(&state, &user, project_id).await?;
+    require_admin(&state, &user, Group::Project(project_id)).await?;
     projects::project_settings(&state.pool, state.settings.alerts.base_url(), project_id)
         .await?
         .map(Json)
@@ -148,7 +126,7 @@ async fn edit(
     Path(project_id): Path<i64>,
     Json(form): Json<ProjectForm>,
 ) -> Result<StatusCode, ApiError> {
-    require_project_admin(&state, &user, project_id).await?;
+    require_admin(&state, &user, Group::Project(project_id)).await?;
     projects::edit_project(&state.pool, &state.settings.quotas, project_id, &form).await?.map_err(ApiError::Invalid)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -158,7 +136,7 @@ async fn delete(
     CurrentUser { user, .. }: CurrentUser,
     Path(project_id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
-    require_project_admin(&state, &user, project_id).await?;
+    require_admin(&state, &user, Group::Project(project_id)).await?;
     projects::delete_project(&state.pool, project_id).await.map_err(ApiError::internal)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -168,13 +146,11 @@ async fn join(
     CurrentUser { user, .. }: CurrentUser,
     Path(project_id): Path<i64>,
 ) -> Result<StatusCode, ApiError> {
-    match projects::join_project(&state.pool, &user, project_id).await? {
+    match memberships::join_project(&state.pool, &user, project_id).await? {
         None => Err(ApiError::NotFound),
-        Some(true) => Ok(StatusCode::NO_CONTENT),
-        Some(false) => match memberships::membership(&state.pool, Group::Project(project_id), user.id).await? {
-            Some(_) => Err(ApiError::Conflict("You are already a member of this project".into())),
-            None => Err(ApiError::Forbidden("This project is not joinable".into())),
-        },
+        Some(Join::Joined) => Ok(StatusCode::NO_CONTENT),
+        Some(Join::AlreadyMember) => Err(ApiError::Conflict("You are already a member of this project".into())),
+        Some(Join::NotJoinable) => Err(ApiError::Forbidden("This project is not joinable".into())),
     }
 }
 
@@ -236,7 +212,7 @@ async fn services(
     CurrentUser { user, .. }: CurrentUser,
     Path(project_id): Path<i64>,
 ) -> ApiResult<Services> {
-    require_project_admin(&state, &user, project_id).await?;
+    require_admin(&state, &user, Group::Project(project_id)).await?;
     Ok(Json(Services {
         kinds: setup::KINDS.iter().map(|(kind, label)| Kind { kind, label }).collect(),
         services: setup::services(&state.pool, project_id).await?,
@@ -249,11 +225,11 @@ async fn add_service(
     Path(project_id): Path<i64>,
     Json(form): Json<setup::ServiceForm>,
 ) -> Result<Response, ApiError> {
-    require_project_admin(&state, &user, project_id).await?;
+    require_admin(&state, &user, Group::Project(project_id)).await?;
     let id = setup::add_service(&state.pool, &state.settings.alerts.webhooks, project_id, &form)
         .await?
         .map_err(ApiError::Invalid)?;
-    Ok((StatusCode::CREATED, Json(json!({ "id": id }))).into_response())
+    Ok(created(id))
 }
 
 async fn edit_service(
@@ -262,7 +238,7 @@ async fn edit_service(
     Path((project_id, service_id)): Path<(i64, i64)>,
     Json(form): Json<setup::ServiceForm>,
 ) -> Result<StatusCode, ApiError> {
-    require_project_admin(&state, &user, project_id).await?;
+    require_admin(&state, &user, Group::Project(project_id)).await?;
     setup::edit_service(&state.pool, &state.settings.alerts.webhooks, project_id, service_id, &form)
         .await?
         .ok_or(ApiError::NotFound)?
@@ -275,7 +251,7 @@ async fn remove_service(
     CurrentUser { user, .. }: CurrentUser,
     Path((project_id, service_id)): Path<(i64, i64)>,
 ) -> Result<StatusCode, ApiError> {
-    require_project_admin(&state, &user, project_id).await?;
+    require_admin(&state, &user, Group::Project(project_id)).await?;
     setup::remove_service(&state.pool, project_id, service_id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -286,7 +262,7 @@ async fn test_service(
     CurrentUser { user, .. }: CurrentUser,
     Path((project_id, service_id)): Path<(i64, i64)>,
 ) -> Result<StatusCode, ApiError> {
-    require_project_admin(&state, &user, project_id).await?;
+    require_admin(&state, &user, Group::Project(project_id)).await?;
     let Some((kind, config, display_name, project_name)): Option<(String, String, String, String)> = sqlx::query_as(
         "SELECT s.kind, s.config, s.display_name, p.name FROM alerts_messagingserviceconfig s
          JOIN projects_project p ON p.id = s.project_id WHERE s.id = $1 AND s.project_id = $2",
@@ -300,6 +276,6 @@ async fn test_service(
     };
     let config = serde_json::from_str(&config).map_err(ApiError::internal)?;
     let job = messaging::TestJob { service_config_id: service_id, kind, config, project_name, display_name };
-    crate::tasks::enqueue(&state.pool, messaging::TEST_JOB_KIND, &job).await.map_err(ApiError::internal)?;
+    crate::tasks::enqueue(&state.pool, &job).await.map_err(ApiError::internal)?;
     Ok(StatusCode::ACCEPTED)
 }

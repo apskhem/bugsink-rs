@@ -7,18 +7,23 @@ pub mod api;
 pub mod digest;
 pub mod event_display;
 mod event_counter;
+pub mod forms;
 pub mod grouping;
 pub mod ingest;
 pub mod installation;
 pub mod issues;
+pub mod mail;
 pub mod memberships;
 pub mod projects;
 pub mod protocol;
 pub mod proxy;
+pub mod py;
 pub mod rest;
 pub mod quota;
+mod releases;
 pub mod search;
 pub mod tasks;
+pub mod user_agent;
 pub mod vacuum;
 
 use std::sync::Arc;
@@ -40,28 +45,14 @@ pub struct Settings {
 pub fn job_registry(settings: &Settings) -> tasks::Registry {
     let quotas = settings.quotas;
     let alerts = Arc::new(settings.alerts.clone());
-    let messaging = alerts.clone();
     tasks::Registry::default()
-        .register(digest::JOB_KIND, move |pool, payload| digest::handle_job(pool, payload, quotas))
-        .register(digest::retention::DELETE_BY_AGE_JOB_KIND, move |pool, payload| {
-            digest::retention::handle_delete_by_age_job(pool, payload, quotas)
-        })
-        .register(issues::deletion::JOB_KIND, issues::deletion::handle_job)
-        .register(projects::DELETE_JOB_KIND, projects::handle_delete_job)
-        .register(accounts::self_service::JOB_KIND, {
-            let alerts = alerts.clone();
-            move |pool, payload| accounts::self_service::handle_job(pool, payload, alerts.clone())
-        })
-        .register(memberships::INVITE_JOB_KIND, {
-            let alerts = alerts.clone();
-            move |pool, payload| memberships::handle_invite_job(pool, payload, alerts.clone())
-        })
-        .register(alerts::JOB_KIND, move |pool, payload| alerts::handle_job(pool, payload, alerts.clone()))
-        .register(alerts::messaging::TEST_JOB_KIND, {
-            let alerts = messaging.clone();
-            move |pool, payload| alerts::messaging::handle_test_job(pool, payload, alerts.clone())
-        })
-        .register(alerts::messaging::JOB_KIND, move |pool, payload| {
-            alerts::messaging::handle_job(pool, payload, messaging.clone())
-        })
+        .register_with(quotas, digest::handle_job)
+        .register_with(quotas, digest::retention::handle_delete_by_age_job)
+        .register(issues::deletion::handle_job)
+        .register(projects::handle_delete_job)
+        .register_with(alerts.clone(), accounts::self_service::handle_job)
+        .register_with(alerts.clone(), memberships::handle_invite_job)
+        .register_with(alerts.clone(), alerts::handle_job)
+        .register_with(alerts.clone(), alerts::messaging::handle_test_job)
+        .register_with(alerts, alerts::messaging::handle_job)
 }

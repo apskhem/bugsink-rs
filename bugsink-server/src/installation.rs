@@ -11,8 +11,8 @@ use serde_json::{Map, Value, json};
 
 use crate::accounts::User;
 use crate::alerts::AlertSettings;
-use crate::grouping::py::strip;
-use crate::projects::FieldErrors;
+use crate::forms::{FieldErrors, REQUIRED, char_field, error};
+use crate::py::strip;
 use crate::quota::{self, QuotaSettings, Scope};
 
 // --- users ------------------------------------------------------------------------------------------------------
@@ -99,12 +99,12 @@ pub async fn edit_user(pool: &PgPool, user_id: i64, email: &str) -> sqlx::Result
         return Ok(None);
     }
     let username = strip(email).to_owned();
-    let error = |message: String| Ok(Some(Err(FieldErrors::from([("email", vec![message])]))));
+    let invalid = |message: &str| Ok(Some(Err(error("email", message))));
     if username.is_empty() {
-        return error("This field is required.".into());
+        return invalid(REQUIRED);
     }
     if crate::accounts::validation::clean_email(&username).is_err() {
-        return error("Enter a valid email address.".into());
+        return invalid("Enter a valid email address.");
     }
     let taken: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM auth_user WHERE username = $1 AND id <> $2)")
         .bind(&username)
@@ -112,19 +112,10 @@ pub async fn edit_user(pool: &PgPool, user_id: i64, email: &str) -> sqlx::Result
         .fetch_one(pool)
         .await?;
     if taken {
-        return error("This email is already registered by another user.".into());
+        return invalid("This email is already registered by another user.");
     }
     // the model's own checks on the username
-    let mut messages = Vec::new();
-    if !regex::Regex::new(r"^[\w.@+-]+\z").expect("valid").is_match(&username) {
-        messages.push(
-            "Enter a valid username. This value may contain only letters, numbers, and @/./+/-/_ characters.".into(),
-        );
-    }
-    let len = username.chars().count();
-    if len > 150 {
-        messages.push(format!("Ensure this value has at most 150 characters (it has {len})."));
-    }
+    let messages = crate::accounts::validation::username_errors(&username);
     if !messages.is_empty() {
         return Ok(Some(Err(FieldErrors::from([("email", messages)]))));
     }
@@ -253,13 +244,7 @@ pub async fn create_auth_token(
     form: &AuthTokenForm,
 ) -> sqlx::Result<Result<i64, FieldErrors>> {
     let mut errors = FieldErrors::new();
-    let description = strip(form.description.as_deref().unwrap_or("")).to_owned();
-    let len = description.chars().count();
-    if description.is_empty() {
-        errors.insert("description", vec!["This field is required.".into()]);
-    } else if len > 255 {
-        errors.insert("description", vec![format!("Ensure this value has at most 255 characters (it has {len}).")]);
-    }
+    let description = char_field(&mut errors, "description", form.description.as_deref(), 255);
     let project_id = match form.project_id {
         None => None,
         Some(id) if token_projects(pool, user).await?.iter().any(|(p, _, _)| *p == id) => Some(id),

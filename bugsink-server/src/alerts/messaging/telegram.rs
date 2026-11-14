@@ -2,20 +2,11 @@
 
 use serde_json::{Value, json};
 
-use super::AlertMessage;
-use crate::alerts::webhook::{Failure, post_json};
-use crate::grouping::py::{json_dumps, truncatechars};
+use super::{AlertMessage, Request, config_str};
+use crate::alerts::webhook::Failure;
+use crate::py::{html_escape, truncatechars};
 
 const MASKED: &str = "[MASKED]";
-
-/// `html.escape(text)` (with `quote=True`).
-fn safe_html(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
-}
 
 /// `_chat_id_supports_message_thread_id`: not for channel usernames.
 fn chat_id_supports_message_thread_id(chat_id: &Value) -> bool {
@@ -26,29 +17,19 @@ fn chat_id_supports_message_thread_id(chat_id: &Value) -> bool {
 fn alert_text(m: &AlertMessage<'_>) -> String {
     let mut text = format!(
         "<b>{}</b>\n\n{} issue\n\n<b>Project:</b> {}",
-        safe_html(&truncatechars(&m.issue.title, 200)),
+        html_escape(&truncatechars(&m.issue.title, 200)),
         m.alert.reason(),
-        safe_html(&m.issue.project_name),
+        html_escape(&m.issue.project_name),
     );
-    if let Some(unmute_reason) = m.alert.unmute_reason().filter(|r| !r.is_empty()) {
-        text += &format!("\n\n<b>Unmute Reason:</b> {}", safe_html(unmute_reason));
+    if let Some(unmute_reason) = m.alert.unmute_reason() {
+        text += &format!("\n\n<b>Unmute Reason:</b> {}", html_escape(unmute_reason));
     }
-    text += &format!("\n\n<a href=\"{}\">View on Bugsink</a>", safe_html(&m.issue.url(m.settings)));
+    text += &format!("\n\n<a href=\"{}\">View on Bugsink</a>", html_escape(&m.issue.url(m.settings)));
     text
 }
 
-fn payload(m: &AlertMessage<'_>, chat_id: &Value) -> Value {
-    let mut data = json!({"chat_id": chat_id, "text": alert_text(m), "parse_mode": "HTML"});
-    if let Some(thread_id) = m.config.get("message_thread_id").filter(|t| !t.is_null())
-        && chat_id_supports_message_thread_id(chat_id)
-    {
-        data["message_thread_id"] = thread_id.clone();
-    }
-    data
-}
-
 /// Telegram's `_store_failure_info` keeps the bot token (which is in the URL) out of what is stored.
-fn mask_token(failure: Failure, bot_token: &str) -> Failure {
+pub(super) fn mask_token(failure: Failure, bot_token: &str) -> Failure {
     if bot_token.is_empty() {
         return failure;
     }
@@ -60,53 +41,42 @@ fn mask_token(failure: Failure, bot_token: &str) -> Failure {
 }
 
 /// `telegram_backend_send_alert`.
-pub(super) async fn send_alert(m: &AlertMessage<'_>) -> Result<(), Failure> {
-    let bot_token = m.config_str("bot_token")?;
-    let chat_id = m.config.get("chat_id").ok_or_else(|| Failure {
-        error_type: "KeyError",
-        message: "'chat_id'".into(),
-        response: None,
-    })?;
-    let url = format!("https://api.telegram.org/bot{bot_token}/sendMessage");
-    post_json(&m.settings.webhooks, &url, json_dumps(&payload(m, chat_id)))
-        .await
-        .map_err(|failure| mask_token(failure, bot_token))
+pub(super) fn alert_request(m: &AlertMessage<'_>) -> Result<Request, Failure> {
+    request(m.config, alert_text(m))
 }
 
-/// `telegram_backend_send_test_message`: (URL, payload, bot token to mask in failures).
-pub(super) fn test_request(
-    config: &Value,
-    project_name: &str,
-    display_name: &str,
-) -> Result<(String, Value, String), Failure> {
-    let key_error = |key: &str| Failure { error_type: "KeyError", message: format!("'{key}'"), response: None };
-    let bot_token = config.get("bot_token").and_then(Value::as_str).ok_or_else(|| key_error("bot_token"))?;
-    let chat_id = config.get("chat_id").ok_or_else(|| key_error("chat_id"))?;
+/// `telegram_backend_send_test_message`.
+pub(super) fn test_request(config: &Value, project_name: &str, display_name: &str) -> Result<Request, Failure> {
     let text = format!(
         concat!(
             "<b>TEST issue</b>\n\nTest message by Bugsink to test the webhook setup.\n\n",
             "<b>Project:</b> {}\n<b>Message Backend:</b> {}",
         ),
-        safe_html(project_name),
-        safe_html(display_name),
+        html_escape(project_name),
+        html_escape(display_name),
     );
+    request(config, text)
+}
+
+/// `sendMessage` with the text, to the configured chat (and topic).
+fn request(config: &Value, text: String) -> Result<Request, Failure> {
+    let bot_token = config_str(config, "bot_token")?;
+    let chat_id = config.get("chat_id").ok_or_else(|| Failure::key_error("chat_id"))?;
     let mut data = json!({"chat_id": chat_id, "text": text, "parse_mode": "HTML"});
     if let Some(thread_id) = config.get("message_thread_id").filter(|t| !t.is_null())
         && chat_id_supports_message_thread_id(chat_id)
     {
         data["message_thread_id"] = thread_id.clone();
     }
-    Ok((format!("https://api.telegram.org/bot{bot_token}/sendMessage"), data, bot_token.to_owned()))
-}
-
-pub(super) fn masked(failure: Failure, bot_token: &str) -> Failure {
-    mask_token(failure, bot_token)
+    let url = format!("https://api.telegram.org/bot{bot_token}/sendMessage");
+    Ok(Request { url, data, bot_token: Some(bot_token.to_owned()) })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::alerts::messaging::test_parts;
+    use crate::py::json_dumps;
 
     #[test]
     fn payload_like_upstream() {
@@ -114,12 +84,15 @@ mod tests {
             test_parts(json!({"bot_token": "123456:ABC-DEF_ghi", "chat_id": "-1001234567890", "message_thread_id": 42}));
         let m = AlertMessage { issue: &issue, alert: &alert, settings: &settings, config: &config };
         // Expected: upstream 2.6.3's `telegram_backend_send_alert` for the same issue.
+        let alert = alert_request(&m).unwrap();
+        assert_eq!(alert.url, "https://api.telegram.org/bot123456:ABC-DEF_ghi/sendMessage");
         assert_eq!(
-            json_dumps(&payload(&m, &config["chat_id"])),
+            json_dumps(&alert.data),
             r#"{"chat_id": "-1001234567890", "text": "<b>Value_Error&lt;T&gt;: bad *input* &amp; &quot;quoted&quot; &#x27;x&#x27; | [a]-#1 ~`\\ \u00e9 \u2713 \ud83d\udc1b</b>\n\nUNMUTED issue\n\n<b>Project:</b> My_Project &lt;web&gt; &amp; *api* [x]-#1 ~`\\\n\n<b>Unmute Reason:</b> Unmuted *because* &lt;x&gt; &amp; _y_ [z] #1 - &#x27;q&#x27; &quot;d&quot; ~`\\\n\n<a href=\"https://bugsink.example.com/issues/issue/8a3cc2c0-1111-4222-8333-444455556666/event/last/\">View on Bugsink</a>", "parse_mode": "HTML", "message_thread_id": 42}"#
         );
 
-        assert!(payload(&m, &json!("@channel")).get("message_thread_id").is_none());
+        let config = json!({"bot_token": "1:x", "chat_id": "@channel", "message_thread_id": 42});
+        assert!(request(&config, String::new()).unwrap().data.get("message_thread_id").is_none());
     }
 
     #[test]

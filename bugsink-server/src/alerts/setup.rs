@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use super::WebhookSettings;
-use crate::grouping::py::{json_dumps, strip};
-use crate::projects::FieldErrors;
+use crate::forms::{FieldErrors, REQUIRED, char_field};
+use crate::py::{json_dumps, strip};
 
 /// `get_alert_service_kind_choices`: (kind, label).
 pub const KINDS: [(&str, &str); 7] = [
@@ -24,8 +24,6 @@ pub const KINDS: [(&str, &str); 7] = [
     ("telegram", "Telegram"),
     ("custom", "Custom"),
 ];
-
-const REQUIRED: &str = "This field is required.";
 
 /// A form field's value from JSON: strings as they are, numbers as Django would see them posted.
 fn text(value: Option<&Value>) -> String {
@@ -134,8 +132,10 @@ fn urlsplit_netloc(value: &str) -> Option<String> {
         if !port.is_empty() && !port.starts_with(':') {
             return None;
         }
+        static IPV_FUTURE: OnceLock<Regex> = OnceLock::new();
         let valid = if host.starts_with('v') {
-            Regex::new(r"\Av[a-fA-F0-9]+\..+\z").expect("valid").is_match(host).unwrap_or(false)
+            let ipv_future = IPV_FUTURE.get_or_init(|| Regex::new(r"\Av[a-fA-F0-9]+\..+\z").expect("valid"));
+            ipv_future.is_match(host).unwrap_or(false)
         } else {
             host.parse::<std::net::Ipv6Addr>().is_ok()
         };
@@ -315,13 +315,7 @@ async fn clean(
     creating: bool,
 ) -> Result<(String, Value), FieldErrors> {
     let mut errors = FieldErrors::new();
-    let display_name = strip(form.display_name.as_deref().unwrap_or("")).to_owned();
-    let len = display_name.chars().count();
-    if display_name.is_empty() {
-        errors.insert("display_name", vec![REQUIRED.into()]);
-    } else if len > 100 {
-        errors.insert("display_name", vec![format!("Ensure this value has at most 100 characters (it has {len}).")]);
-    }
+    let display_name = char_field(&mut errors, "display_name", form.display_name.as_deref(), 100);
     if creating && !KINDS.iter().any(|(k, _)| *k == kind) {
         // upstream fails on this (a 500)
         errors.insert("kind", vec![format!("Select a valid choice. {kind} is not one of the available choices.")]);

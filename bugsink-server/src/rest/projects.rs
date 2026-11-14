@@ -14,9 +14,10 @@ use super::fields::{self, Errors, optional, present, required};
 use super::pagination::{self, Ordering};
 use super::{
     CountsOf, Ctx, Drf, PROJECT_VISIBLE, Reply, Request, Route, TEAM_VISIBLE, enforce_user_boundness_for_team,
-    guard_project, object_body, ok, project_by_pk, py_str_datetime, render, serve, uuid_pk,
+    guard_project, guarded_project, object_body, ok, render, serve, uuid_pk,
 };
 use crate::api::ApiState;
+use crate::py::{drf_datetime, py_uuid, str_datetime};
 
 const PROJECT_VISIBILITIES: &[(&str, i32)] = &[("joinable", 1), ("discoverable", 10), ("team_members", 99)];
 const TEAM_VISIBILITIES: &[(&str, i32)] = &[("joinable", 1), ("discoverable", 10), ("hidden", 99)];
@@ -140,12 +141,11 @@ async fn list_projects(c: &Ctx) -> Reply {
     }
     if let Some(team) = c.req.query.get("team").filter(|t| !t.is_empty()) {
         // upstream filters on the string as is: a malformed UUID is a 500
-        let team = fields::py_uuid(team).ok_or_else(|| Drf::internal(format!("“{team}” is not a valid UUID.")))?;
+        let team = py_uuid(team).ok_or_else(|| Drf::internal(format!("“{team}” is not a valid UUID.")))?;
         query.push(" AND p.team_id = ").push_bind(team);
     }
     let ordering = Ordering::asc_desc(&c.req, &["p.name"], "text", false)?;
-    let cursor = pagination::decode_cursor(&c.req)?;
-    let page = pagination::paginate(c.pool(), query, &ordering, cursor, |p: &ProjectRow| p.name.clone()).await?;
+    let page = pagination::paginate(c.pool(), &c.req, query, &ordering, |p: &ProjectRow| p.name.clone()).await?;
     refuse_expand(&c.req)?;
     let results = page.items.iter().map(|p| project_json(c, p).map(Value::Object)).collect::<Result<_, _>>()?;
     ok(page.response(&c.req, results))
@@ -173,23 +173,17 @@ async fn project_fields(
     let mut errors = Errors::default();
     let mut team = None;
     if creating {
-        match present(data, "team", true) {
+        match required(data, "team", fields::uuid_pk) {
             Err(messages) => errors.add("team", messages),
-            Ok(v) => {
-                let v = v.expect("required");
-                match fields::uuid_pk(v) {
-                    Err(messages) => errors.add("team", messages),
-                    Ok(id) => {
-                        let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM teams_team WHERE id = $1)")
-                            .bind(id)
-                            .fetch_one(c.pool())
-                            .await?;
-                        if exists {
-                            team = Some(id);
-                        } else {
-                            errors.add("team", fields::does_not_exist(v));
-                        }
-                    }
+            Ok(id) => {
+                let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM teams_team WHERE id = $1)")
+                    .bind(id)
+                    .fetch_one(c.pool())
+                    .await?;
+                if exists {
+                    team = Some(id);
+                } else {
+                    errors.add("team", fields::does_not_exist(&data["team"]));
                 }
             }
         }
@@ -208,31 +202,9 @@ async fn project_fields(
     // `validate_retention_max_event_count`
     if let Some(value) = retention {
         let quotas = &c.state.settings.quotas;
-        let mut message = None;
-        if let Some(cap) = quotas.max_retention_per_project_event_count.0
-            && value > cap
-        {
-            message = Some(format!("The maximum allowed retention per project is {cap} events."));
-        }
-        if message.is_none()
-            && let Some(total) = quotas.max_retention_event_count.0
-        {
-            let others: i64 = sqlx::query_scalar(
-                "SELECT coalesce(SUM(retention_max_event_count), 0)::bigint FROM projects_project
-                 WHERE id IS DISTINCT FROM $1",
-            )
-            .bind(instance.map(|(id, _)| id))
-            .fetch_one(c.pool())
-            .await?;
-            let budget_left = (total - others).max(0);
-            if value > budget_left {
-                message = Some(format!(
-                    "The maximum allowed retention for this project is {budget_left} events (based on the \
-                     installation-wide max of {total} events)."
-                ));
-            }
-        }
-        if let Some(message) = message {
+        let project_id = instance.map(|(id, _)| id);
+        let within = crate::projects::retention_within_budget(c.pool(), quotas, value, project_id, None).await?;
+        if let Err(message) = within {
             errors.add("retention_max_event_count", vec![message]);
             retention = None;
         }
@@ -278,29 +250,17 @@ async fn create_project(c: &Ctx) -> Reply {
     let name = fields.name.expect("required on create");
     let mut tx = c.pool().begin().await?;
     let slug = crate::projects::unique_slug(&mut tx, &name).await?;
-    let [new_issue, regression, unmute] = fields.alerts;
-    // `Project.objects.create` with the model's defaults for what wasn't given
-    let id: i64 = sqlx::query_scalar(
-        "INSERT INTO projects_project (
-             team_id, name, slug, sentry_key, is_deleted, has_releases, issue_count, digested_event_count,
-             stored_event_count, alert_on_new_issue, alert_on_regression, alert_on_unmute, visibility,
-             quota_exceeded_until, quota_exceeded_reason, next_quota_check, retention_max_event_count,
-             grouping_mechanism, previous_grouping_mechanism, grouping_mechanism_upgraded_at)
-         VALUES ($1, $2, $3, gen_random_uuid(), false, false, 0, 0, 0, $4, $5, $6, $7, NULL, 'null', 0, $8, $9, NULL,
-                 NULL)
-         RETURNING id",
-    )
-    .bind(team)
-    .bind(&name)
-    .bind(&slug)
-    .bind(new_issue.unwrap_or(true))
-    .bind(regression.unwrap_or(true))
-    .bind(unmute.unwrap_or(true))
-    .bind(fields.visibility.unwrap_or(bugsink_db::PROJECT_VISIBILITY_TEAM_MEMBERS))
-    .bind(fields.retention.unwrap_or(10_000) as i32)
-    .bind(crate::grouping::BUGSINK_V2)
-    .fetch_one(&mut *tx)
-    .await?;
+    // the model's defaults for what wasn't given
+    let new = crate::projects::NewProject {
+        team_id: Some(team),
+        name: &name,
+        slug: &slug,
+        alerts: fields.alerts.map(|a| a.unwrap_or(true)),
+        visibility: fields.visibility.unwrap_or(bugsink_db::PROJECT_VISIBILITY_TEAM_MEMBERS),
+        retention_max_event_count: fields.retention.unwrap_or(10_000) as i32,
+        grouping_mechanism: crate::grouping::BUGSINK_V2,
+    };
+    let (id, _) = crate::projects::insert_project(&mut tx, &new).await?;
     tx.commit().await?;
     Ok(render(StatusCode::CREATED, &written_project_json(&project_row(c, id).await?)?))
 }
@@ -314,8 +274,7 @@ static PROJECT: Route = Route {
 pub async fn project(State(state): State<ApiState>, Path(pk): Path<String>, req: Request) -> Response {
     serve(state, req, &PROJECT, |c| async move {
         let capability = if c.method() == "PATCH" { "projects:manage" } else { "projects:read" };
-        let id = project_by_pk(&c, &pk).await?;
-        guard_project(&c, capability, id).await?;
+        let id = guarded_project(&c, &pk, true, capability).await?;
         if c.method() == "PATCH" {
             return update_project(&c, id).await;
         }
@@ -331,7 +290,7 @@ pub async fn project(State(state): State<ApiState>, Path(pk): Path<String>, req:
             // `TeamDetailSerializer(None).data` for a project without a team: its fields' initial values
             let team = match project.team_id {
                 None => json!({"name": "", "visibility": null}),
-                Some(team) => Value::Object(team_json(&team_row(&c, team).await?)?),
+                Some(team) => team_json(&team_row(&c, team).await?)?,
             };
             map.insert("team".into(), team);
         }
@@ -372,8 +331,7 @@ static PROJECT_COUNTS: Route =
 
 pub async fn project_event_counts(State(state): State<ApiState>, Path(pk): Path<String>, req: Request) -> Response {
     serve(state, req, &PROJECT_COUNTS, |c| async move {
-        let id = project_by_pk(&c, &pk).await?;
-        guard_project(&c, "projects:read", id).await?;
+        let id = guarded_project(&c, &pk, true, "projects:read").await?;
         super::event_counts(&c, CountsOf::Project(id)).await
     })
     .await
@@ -388,13 +346,8 @@ struct TeamRow {
     visibility: i32,
 }
 
-fn team_json(t: &TeamRow) -> Result<Map<String, Value>, Drf> {
-    let Value::Object(map) =
-        json!({"id": t.id, "name": t.name, "visibility": visibility_name(TEAM_VISIBILITIES, t.visibility)?})
-    else {
-        unreachable!()
-    };
-    Ok(map)
+fn team_json(t: &TeamRow) -> Result<Value, Drf> {
+    Ok(json!({"id": t.id, "name": t.name, "visibility": visibility_name(TEAM_VISIBILITIES, t.visibility)?}))
 }
 
 async fn team_row(c: &Ctx, id: Uuid) -> sqlx::Result<TeamRow> {
@@ -424,16 +377,15 @@ pub async fn teams(State(state): State<ApiState>, req: Request) -> Response {
                 .bind(visibility.unwrap_or(10))
                 .execute(c.pool())
                 .await?;
-            return Ok(render(StatusCode::CREATED, &Value::Object(team_json(&team_row(&c, id).await?)?)));
+            return Ok(render(StatusCode::CREATED, &team_json(&team_row(&c, id).await?)?));
         }
         let mut query = QueryBuilder::<Postgres>::new("SELECT t.id, t.name, t.visibility FROM teams_team t WHERE true");
         if let Some(user) = c.token.user.as_ref().filter(|u| !u.is_superuser) {
             query.push(format!(" AND {}", TEAM_VISIBLE.replace("$1", &user.id.to_string())));
         }
         let ordering = Ordering::asc_desc(&c.req, &["t.name"], "text", false)?;
-        let cursor = pagination::decode_cursor(&c.req)?;
-        let page = pagination::paginate(c.pool(), query, &ordering, cursor, |t: &TeamRow| t.name.clone()).await?;
-        let results = page.items.iter().map(|t| team_json(t).map(Value::Object)).collect::<Result<_, _>>()?;
+        let page = pagination::paginate(c.pool(), &c.req, query, &ordering, |t: &TeamRow| t.name.clone()).await?;
+        let results = page.items.iter().map(team_json).collect::<Result<_, _>>()?;
         ok(page.response(&c.req, results))
     })
     .await
@@ -456,7 +408,7 @@ async fn team_fields(
             // the model's unique name (UniqueValidator first), then the field's own checks
             let mut messages = Vec::new();
             let text = match v {
-                Value::String(s) => Some(crate::grouping::py::strip(s).to_owned()),
+                Value::String(s) => Some(crate::py::strip(s).to_owned()),
                 Value::Number(_) => Some(fields::str_of(v)),
                 _ => None,
             };
@@ -524,7 +476,7 @@ pub async fn team(State(state): State<ApiState>, Path(pk): Path<String>, req: Re
             .execute(c.pool())
             .await?;
         }
-        ok(Value::Object(team_json(&team_row(&c, id).await?)?))
+        ok(team_json(&team_row(&c, id).await?)?)
     })
     .await
 }
@@ -547,7 +499,7 @@ fn release_json(r: &ReleaseRow, detail: bool) -> Value {
         "id": r.id,
         "project": r.project_id,
         "version": r.version,
-        "date_released": fields::datetime(&r.date_released),
+        "date_released": drf_datetime(&r.date_released),
     });
     if detail {
         v["semver"] = json!(r.semver);
@@ -571,14 +523,13 @@ pub async fn releases(State(state): State<ApiState>, req: Request) -> Response {
         if c.method() == "POST" {
             return create_release(&c).await;
         }
-        let project_id = project_by_pk(&c, super::required_param(&c.req, "project")?).await?;
-        guard_project(&c, "releases:read", project_id).await?;
+        let project = super::required_param(&c.req, "project")?;
+        let project_id = guarded_project(&c, project, true, "releases:read").await?;
         let mut query = QueryBuilder::<Postgres>::new(format!("{RELEASE_SELECT} WHERE project_id = "));
         query.push_bind(project_id);
         let ordering = Ordering::asc_desc(&c.req, &["date_released"], "timestamptz", true)?;
-        let cursor = pagination::decode_cursor(&c.req)?;
-        let page = pagination::paginate(c.pool(), query, &ordering, cursor, |r: &ReleaseRow| {
-            py_str_datetime(&r.date_released)
+        let page = pagination::paginate(c.pool(), &c.req, query, &ordering, |r: &ReleaseRow| {
+            str_datetime(&r.date_released)
         })
         .await?;
         let results = page.items.iter().map(|r| release_json(r, false)).collect();
@@ -593,25 +544,19 @@ async fn create_release(c: &Ctx) -> Reply {
     let data = object_body(&data)?;
     let mut errors = Errors::default();
     let mut project = None;
-    match present(data, "project", true) {
+    match required(data, "project", fields::int_pk) {
         Err(messages) => errors.add("project", messages),
-        Ok(v) => {
-            let v = v.expect("required");
-            match fields::int_pk(v) {
-                Err(messages) => errors.add("project", messages),
-                Ok(id) => {
-                    let found: Option<i64> = match id {
-                        Some(id) => sqlx::query_scalar("SELECT id FROM projects_project WHERE id = $1")
-                            .bind(id)
-                            .fetch_optional(c.pool())
-                            .await?,
-                        None => None,
-                    };
-                    match found {
-                        Some(id) => project = Some(id),
-                        None => errors.add("project", fields::does_not_exist(v)),
-                    }
-                }
+        Ok(id) => {
+            let found: Option<i64> = match id {
+                Some(id) => sqlx::query_scalar("SELECT id FROM projects_project WHERE id = $1")
+                    .bind(id)
+                    .fetch_optional(c.pool())
+                    .await?,
+                None => None,
+            };
+            match found {
+                Some(id) => project = Some(id),
+                None => errors.add("project", fields::does_not_exist(&data["project"])),
             }
         }
     }
@@ -628,7 +573,7 @@ async fn create_release(c: &Ctx) -> Reply {
             .fetch_one(&mut *tx)
             .await?;
     let timestamp = timestamp.unwrap_or_else(|| Utc::now().trunc_subsecs(6));
-    let (version, created) = crate::digest::releases::create_release_if_needed(
+    let (version, created) = crate::releases::create_release_if_needed(
         &mut tx,
         project_id,
         &mut has_releases,

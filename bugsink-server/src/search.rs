@@ -9,7 +9,7 @@ use bugsink_db::{PgPool, Postgres};
 use sqlx::QueryBuilder;
 use uuid::Uuid;
 
-use crate::grouping::py::{is_space, strip};
+use crate::py::{is_space, strip};
 
 /// `ParsedQuery`: tags in first-seen key order (a repeated key keeps its first position, with its last value).
 #[derive(Debug, PartialEq)]
@@ -167,7 +167,7 @@ impl Search {
                 None => return Ok(Self::Nothing),
             }
         }
-        let like = (!parsed.plain_text.is_empty()).then(|| format!("%{}%", escape_like(&parsed.plain_text)));
+        let like = (!parsed.plain_text.is_empty()).then(|| contains_pattern(&parsed.plain_text));
         if tag_value_ids.is_empty() && like.is_none() {
             return Ok(Self::Everything);
         }
@@ -202,14 +202,23 @@ impl Search {
             qb.push(")");
         }
         if let Some(like) = like {
-            // Django's icontains on Postgres
-            qb.push(" AND (UPPER(calculated_type::text) LIKE UPPER(");
-            qb.push_bind(like.clone());
-            qb.push(") OR UPPER(calculated_value::text) LIKE UPPER(");
-            qb.push_bind(like.clone());
-            qb.push("))");
+            push_icontains(qb, "", like);
         }
     }
+}
+
+/// The `LIKE` pattern for `icontains`: the text, escaped as Django's `prep_for_like_query` does, anywhere.
+pub(crate) fn contains_pattern(text: &str) -> String {
+    format!("%{}%", escape_like(text))
+}
+
+/// Django's `icontains` on Postgres, for the issue's type or value (`prefix`: the issue table's alias and a dot).
+pub(crate) fn push_icontains(qb: &mut QueryBuilder<Postgres>, prefix: &'static str, like: &str) {
+    qb.push(format!(" AND (UPPER({prefix}calculated_type::text) LIKE UPPER("));
+    qb.push_bind(like.to_owned());
+    qb.push(format!(") OR UPPER({prefix}calculated_value::text) LIKE UPPER("));
+    qb.push_bind(like.to_owned());
+    qb.push("))");
 }
 
 /// Django's `prep_for_like_query`.

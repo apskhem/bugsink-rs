@@ -9,12 +9,13 @@
 
 use std::collections::HashMap;
 use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
 use bugsink_db::PgPool;
-use futures::future::BoxFuture;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use serde_json::Value;
 use sqlx::postgres::PgListener;
 use sqlx::{PgExecutor, Row};
@@ -24,20 +25,25 @@ const CHANNEL: &str = "jobs";
 const POLL_INTERVAL: Duration = Duration::from_secs(5);
 const MAX_ATTEMPTS: i32 = 5;
 
-pub async fn enqueue<'e>(executor: impl PgExecutor<'e>, kind: &str, payload: &impl Serialize) -> anyhow::Result<()> {
+/// A job's payload, by the kind it's stored and dispatched as.
+pub trait Job: Serialize + DeserializeOwned + Send + 'static {
+    const KIND: &str;
+}
+
+pub async fn enqueue<'e, J: Job>(executor: impl PgExecutor<'e>, job: &J) -> anyhow::Result<()> {
     sqlx::query(
         "WITH new_job AS (INSERT INTO bsrs_job (kind, payload) VALUES ($1, $2::json) RETURNING id)
          SELECT pg_notify($3, '') FROM new_job",
     )
-    .bind(kind)
-    .bind(serde_json::to_string(payload)?)
+    .bind(J::KIND)
+    .bind(serde_json::to_string(job)?)
     .bind(CHANNEL)
     .execute(executor)
     .await?;
     Ok(())
 }
 
-type Handler = Arc<dyn Fn(PgPool, Value) -> BoxFuture<'static, anyhow::Result<()>> + Send + Sync>;
+type Handler = Arc<dyn Fn(PgPool, Value) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
 
 #[derive(Clone, Default)]
 pub struct Registry {
@@ -45,12 +51,31 @@ pub struct Registry {
 }
 
 impl Registry {
-    pub fn register<F, Fut>(mut self, kind: &'static str, handler: F) -> Self
+    pub fn register<J: Job, Fut>(self, handler: impl Fn(PgPool, J) -> Fut + Send + Sync + 'static) -> Self
     where
-        F: Fn(PgPool, Value) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
     {
-        self.handlers.insert(kind, Arc::new(move |pool, payload| Box::pin(handler(pool, payload))));
+        self.register_with((), move |pool, job, ()| handler(pool, job))
+    }
+
+    /// A handler that is also given (a clone of) `state`.
+    pub fn register_with<J: Job, S, Fut>(
+        mut self,
+        state: S,
+        handler: impl Fn(PgPool, J, S) -> Fut + Send + Sync + 'static,
+    ) -> Self
+    where
+        S: Clone + Send + Sync + 'static,
+        Fut: Future<Output = anyhow::Result<()>> + Send + 'static,
+    {
+        let handler = Arc::new(handler);
+        self.handlers.insert(
+            J::KIND,
+            Arc::new(move |pool, payload| {
+                let (handler, state) = (handler.clone(), state.clone());
+                Box::pin(async move { handler(pool, serde_json::from_value(payload)?, state).await })
+            }),
+        );
         self
     }
 }

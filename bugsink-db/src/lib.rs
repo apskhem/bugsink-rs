@@ -20,8 +20,6 @@ use sqlx::{Executor, Row};
 
 pub use sqlx::{PgPool, Postgres, Transaction};
 
-pub mod models;
-
 pub const UPSTREAM_VERSION: &str = "2.6.3";
 
 const UPSTREAM_SCHEMA: &str = include_str!("../upstream/2.6.3-schema.sql");

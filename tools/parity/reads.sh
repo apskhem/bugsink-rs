@@ -38,17 +38,7 @@ PY
 # Plus events to show: the display corpus and the grouping corpus (what digest drops never gets shown).
 python3 tools/parity/make_display_corpus.py >/dev/null
 python3 tools/parity/make_grouping_corpus.py >/dev/null
-python3 - tools/parity/display-corpus.jsonl tools/parity/grouping-corpus.jsonl > "$out/shown.jsonl" <<'PY'
-import json, sys
-from datetime import datetime, timedelta, timezone
-t0 = datetime(2026, 11, 1, 21, 0, tzinfo=timezone.utc)
-lines = [line for path in sys.argv[1:] for line in open(path)]
-for i, line in enumerate(lines):
-    at = t0 + timedelta(seconds=10 * i)
-    print(json.dumps({"n": 2000 + i, "project_id": 1, "event_id": f"{0xd15000 + i:032x}", "ingested_at": at.isoformat(),
-                      "digested_at": (at + timedelta(seconds=1)).isoformat(), "remote_addr": "203.0.113.5",
-                      "event": json.loads(line)}))
-PY
+python3 tools/parity/make_shown_steps.py > "$out/shown.jsonl"
 grep -v -e alerts_messagingserviceconfig -e 'SET retention_max_event_count' -e '"vacuum"' \
     tools/parity/digest-steps.jsonl | cat - "$out/busy.jsonl" "$out/shown.jsonl" \
     | ./target/debug/examples/replay >/dev/null

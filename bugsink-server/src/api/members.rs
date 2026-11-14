@@ -10,10 +10,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-use super::{ApiError, ApiResult, ApiState};
+use super::{ApiError, ApiResult, ApiState, require_admin, require_exists};
 use crate::accounts::{CurrentUser, User};
+use crate::forms::{FieldErrors, choice_field, error};
 use crate::memberships::{self, Group, InviteError, Invited, Member, ROLE_ADMIN};
-use crate::projects::{self, FieldErrors};
 
 pub fn routes() -> Router<ApiState> {
     let mut router = Router::new();
@@ -36,27 +36,6 @@ fn group(path: &MatchedPath, id: &str) -> Result<Group, ApiError> {
         Uuid::try_parse(id).map(Group::Team).map_err(|_| ApiError::NotFound)
     } else {
         id.parse().map(Group::Project).map_err(|_| ApiError::NotFound)
-    }
-}
-
-/// The team exists, or the project exists and isn't deleted.
-async fn require_exists(state: &ApiState, group: Group) -> Result<(), ApiError> {
-    let exists: bool = match group {
-        Group::Team(id) => sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM teams_team WHERE id = $1)").bind(id),
-        Group::Project(id) => sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM projects_project WHERE id = $1 AND NOT is_deleted)",
-        )
-        .bind(id),
-    }
-    .fetch_one(&state.pool)
-    .await?;
-    if exists { Ok(()) } else { Err(ApiError::NotFound) }
-}
-
-async fn require_admin(state: &ApiState, user: &User, group: Group) -> Result<(), ApiError> {
-    match group {
-        Group::Team(id) => super::teams::require_team_admin(state, user, id).await,
-        Group::Project(id) => super::project_admin::require_project_admin(state, user, id).await,
     }
 }
 
@@ -98,17 +77,7 @@ async fn invite(
     let group = group(&matched, &id)?;
     require_admin(&state, &user, group).await?;
     let mut errors = FieldErrors::new();
-    let role = match req.role {
-        None => {
-            errors.insert("role", vec!["This field is required.".into()]);
-            0
-        }
-        Some(r @ (0 | 1)) => r as i32,
-        Some(r) => {
-            errors.insert("role", vec![format!("Select a valid choice. {r} is not one of the available choices.")]);
-            0
-        }
-    };
+    let role = choice_field(&mut errors, "role", req.role, &[0, 1]) as i32;
     let email = req.email.unwrap_or_default();
     if let Err(message) = crate::accounts::validation::clean_email(&email) {
         errors.insert("email", vec![message.into()]);
@@ -119,7 +88,7 @@ async fn invite(
     match memberships::invite(&state.memberships(), group, &user, &email, role).await {
         Ok(invited) => Ok(Json(invited)),
         Err(InviteError::Email(message)) => {
-            Err(ApiError::Invalid(FieldErrors::from([("email", vec![message.into()])])))
+            Err(ApiError::Invalid(error("email", message)))
         }
         Err(InviteError::Db(e)) => Err(e.into()),
         Err(InviteError::Other(e)) => Err(ApiError::internal(e)),
@@ -138,7 +107,7 @@ async fn remove(
     if let Group::Team(team_id) = group
         && user_id == user.id
     {
-        return match projects::leave_team(&state.pool, user.id, team_id, false).await? {
+        return match memberships::leave_team(&state.pool, user.id, team_id, false).await? {
             None => Err(ApiError::NotFound),
             Some(false) => Err(ApiError::Conflict(super::teams::LAST_ADMIN.into())),
             Some(true) => Ok(StatusCode::NO_CONTENT),
@@ -213,26 +182,17 @@ async fn update(
 ) -> Result<StatusCode, ApiError> {
     let group = group(&matched, &id)?;
     require_exists(&state, group).await?;
-    let noun = match group {
-        Group::Team(_) => "team",
-        Group::Project(_) => "project",
-    };
     let Some((your_role, accepted)) = memberships::membership(&state.pool, group, user.id).await? else {
-        return Err(ApiError::Forbidden(format!("You are not a member of this {noun}")));
+        return Err(ApiError::Forbidden(format!("You are not a member of this {}", group.noun())));
     };
     if !accepted {
         return Err(ApiError::Conflict("Accept the invitation first".into()));
     }
-    let role = match req.role {
-        None => None,
-        Some(r @ (0 | 1)) => Some(r as i32),
-        Some(r) => {
-            return Err(ApiError::Invalid(FieldErrors::from([(
-                "role",
-                vec![format!("Select a valid choice. {r} is not one of the available choices.")],
-            )])));
-        }
-    };
+    let mut errors = FieldErrors::new();
+    let role = req.role.map(|r| choice_field(&mut errors, "role", Some(r), &[0, 1]) as i32);
+    if !errors.is_empty() {
+        return Err(ApiError::Invalid(errors));
+    }
     if user_id == user.id {
         let may_edit_role = your_role == ROLE_ADMIN || user.is_superuser;
         memberships::update_member(&state.pool, group, user_id, role.filter(|_| may_edit_role), req.send_email_alerts)
@@ -244,7 +204,7 @@ async fn update(
         Group::Project(id) => memberships::is_project_admin(&state.pool, &user, id).await?,
     };
     if !allowed {
-        return Err(ApiError::Forbidden(format!("You are not an admin of this {noun}")));
+        return Err(ApiError::Forbidden(format!("You are not an admin of this {}", group.noun())));
     }
     if memberships::membership(&state.pool, group, user_id).await?.is_none() {
         return Err(ApiError::NotFound);

@@ -7,7 +7,7 @@ use std::net::SocketAddr;
 
 use axum::http::HeaderMap;
 
-use crate::alerts::py_bool;
+use crate::py::py_bool;
 
 #[derive(clap::Args, Clone, Debug)]
 pub struct ProxySettings {
@@ -88,7 +88,7 @@ fn header(headers: &HeaderMap, name: &str) -> Option<String> {
 /// there are exactly N addresses and the first is the client.
 fn parse_x_forwarded_for(value: Option<&str>, proxy_count: usize) -> Result<Option<String>, SpoofedForwardedFor> {
     let Some(value) = value.filter(|v| !v.is_empty()) else { return Ok(None) };
-    let ips: Vec<&str> = value.split(',').map(crate::grouping::py::strip).collect();
+    let ips: Vec<&str> = value.split(',').map(crate::py::strip).collect();
     match ips.len().cmp(&proxy_count) {
         std::cmp::Ordering::Equal => Ok(Some(ips[0].to_owned())),
         std::cmp::Ordering::Greater => Err(SpoofedForwardedFor),

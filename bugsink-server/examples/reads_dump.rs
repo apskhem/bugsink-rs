@@ -6,7 +6,7 @@ use std::io::BufRead;
 
 use bugsink_db::PgPool;
 use bugsink_server::event_display;
-use bugsink_server::grouping::py::isoformat;
+use bugsink_server::py::isoformat;
 use bugsink_server::issues::pages;
 use bugsink_server::search::{Search, Searched, parse_query};
 use chrono::{DateTime, Utc};

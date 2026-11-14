@@ -1,4 +1,4 @@
-//! Row types as read by the UI API, over upstream's tables. Writes are explicit SQL near their callers.
+//! Row types as the UI API reads them, over upstream's tables. Writes are explicit SQL near their callers.
 //!
 //! Column types follow upstream's Postgres schema exactly (`integer` -> i32, `bigint` -> i64), because sqlx decodes
 //! strictly by type.
@@ -8,20 +8,6 @@ use serde::Serialize;
 use serde_json::value::RawValue;
 use sqlx::types::Json;
 use uuid::Uuid;
-
-#[derive(Debug, Serialize, sqlx::FromRow)]
-pub struct Project {
-    pub id: i64,
-    pub team_id: Option<Uuid>,
-    pub name: String,
-    pub slug: String,
-    pub sentry_key: Uuid,
-    pub digested_event_count: i32,
-    pub stored_event_count: i32,
-    pub issue_count: i32,
-    pub has_releases: bool,
-    pub retention_max_event_count: i32,
-}
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct IssueSummary {

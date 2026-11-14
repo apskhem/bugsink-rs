@@ -15,14 +15,11 @@ use std::collections::HashMap;
 use bugsink_db::{PgPool, Postgres, Transaction};
 use chrono::{DateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use uuid::Uuid;
 
 use super::Project;
 use crate::quota::QuotaSettings;
 use crate::tasks;
-
-pub const DELETE_BY_AGE_JOB_KIND: &str = "delete_by_age_until_under_retention_max";
 
 const DELETE_OLD_EVENTS_BATCH_SIZE: i64 = 500;
 
@@ -290,15 +287,18 @@ pub struct DeleteByAgeJob {
     pub project_id: i64,
 }
 
-pub(crate) async fn enqueue_delete_by_age(tx: &mut Transaction<'_, Postgres>, project_id: i64) -> anyhow::Result<()> {
-    tasks::enqueue(&mut **tx, DELETE_BY_AGE_JOB_KIND, &DeleteByAgeJob { project_id }).await
+impl tasks::Job for DeleteByAgeJob {
+    const KIND: &str = "delete_by_age_until_under_retention_max";
 }
 
-/// Job handler for `DELETE_BY_AGE_JOB_KIND` (`delete_by_age_until_under_retention_max`): deletes the oldest events,
+pub(crate) async fn enqueue_delete_by_age(tx: &mut Transaction<'_, Postgres>, project_id: i64) -> anyhow::Result<()> {
+    tasks::enqueue(&mut **tx, &DeleteByAgeJob { project_id }).await
+}
+
+/// Job handler (`delete_by_age_until_under_retention_max`): deletes the oldest events,
 /// 500 per job, until the project is under its retention maximum. Digest schedules it when retention is zero, where
 /// evict-before-add can't work.
-pub async fn handle_delete_by_age_job(pool: PgPool, payload: Value, quotas: QuotaSettings) -> anyhow::Result<()> {
-    let job: DeleteByAgeJob = serde_json::from_value(payload)?;
+pub async fn handle_delete_by_age_job(pool: PgPool, job: DeleteByAgeJob, quotas: QuotaSettings) -> anyhow::Result<()> {
     let mut tx = pool.begin().await?;
 
     let Some((stored_event_count, max_event_count)): Option<(i32, i32)> = sqlx::query_as(

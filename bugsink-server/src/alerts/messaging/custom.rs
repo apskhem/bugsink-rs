@@ -8,8 +8,8 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use super::AlertMessage;
-use crate::alerts::webhook::{Failure, post_json};
-use crate::grouping::py::{isoformat, json_dumps, py_str};
+use crate::py::{drf_datetime, py_str};
+use crate::releases::parse_lines;
 
 /// The issue's columns that `IssueSerializer` reads.
 pub(super) struct IssueData {
@@ -70,19 +70,6 @@ impl IssueData {
     }
 }
 
-/// DRF's `DateTimeField` in UTC: ISO 8601 with `Z`.
-fn drf_datetime(dt: &DateTime<Utc>) -> String {
-    let iso = isoformat(dt);
-    format!("{}Z", iso.strip_suffix("+00:00").unwrap_or(&iso))
-}
-
-/// `parse_lines`: newline-terminated entries.
-fn parse_lines(s: &str) -> Vec<&str> {
-    let mut lines: Vec<&str> = s.split('\n').collect();
-    lines.pop();
-    lines
-}
-
 /// `UnmuteVolumeConditionSerializer` (`period` a string, the others ints).
 fn volume_conditions(conditions: &str) -> Value {
     let conditions: Vec<Value> = serde_json::from_str(conditions).unwrap_or_default();
@@ -94,10 +81,11 @@ fn volume_conditions(conditions: &str) -> Value {
 }
 
 /// `IssueSerializer(issue).data` plus the convenience fields.
-fn payload(m: &AlertMessage<'_>, issue: &IssueData) -> Value {
+/// `custom_backend_send_alert`.
+pub(super) fn payload(m: &AlertMessage<'_>, issue: &IssueData) -> Value {
     let mut data = json!({
         "id": issue.id.to_string(),
-        "friendly_id": format!("{}-{}", issue.project_slug.to_uppercase(), issue.digest_order),
+        "friendly_id": crate::issues::friendly_id(&issue.project_slug, issue.digest_order),
         "project": issue.project_id,
         "digest_order": issue.digest_order,
         "last_seen": drf_datetime(&issue.last_seen),
@@ -120,17 +108,12 @@ fn payload(m: &AlertMessage<'_>, issue: &IssueData) -> Value {
         "url": m.issue.url(m.settings),
         "alert_reason": m.alert.reason(),
     });
-    if let Some(unmute_reason) = m.alert.unmute_reason().filter(|r| !r.is_empty()) {
+    if let Some(unmute_reason) = m.alert.unmute_reason() {
         data["unmute_reason"] = json!(unmute_reason);
     }
     data
 }
 
-/// `custom_backend_send_alert`.
-pub(super) async fn send_alert(m: &AlertMessage<'_>, issue: &IssueData) -> Result<(), Failure> {
-    let webhook_url = m.config_str("webhook_url")?;
-    post_json(&m.settings.webhooks, webhook_url, json_dumps(&payload(m, issue))).await
-}
 
 /// `custom_backend_send_test_message`: a made-up issue.
 pub(super) fn test_payload(project_name: &str) -> Value {
@@ -165,6 +148,7 @@ pub(super) fn test_payload(project_name: &str) -> Value {
 mod tests {
     use super::*;
     use crate::alerts::messaging::test_parts;
+    use crate::py::json_dumps;
     use chrono::TimeZone;
 
     #[test]

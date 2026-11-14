@@ -6,65 +6,13 @@
 
 use serde_json::{Map, Number, Value};
 
-use crate::grouping::py::{float_repr, str_repr};
+use crate::py::{JsonStyle, str_repr, write_json};
 
 /// `json.dumps(v, ensure_ascii=False, allow_nan=False, separators=(",", ":"))` as DRF renders it.
 pub fn dumps(v: &Value) -> String {
     let mut out = String::new();
-    write(v, &mut out);
+    write_json(v, JsonStyle::Drf, &mut out);
     out
-}
-
-fn write(v: &Value, out: &mut String) {
-    match v {
-        Value::Null => out.push_str("null"),
-        Value::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
-        Value::Number(n) if n.is_i64() || n.is_u64() => out.push_str(&n.to_string()),
-        Value::Number(n) => out.push_str(&float_repr(n.as_f64().unwrap_or(0.0))),
-        Value::String(s) => write_str(s, out),
-        Value::Array(a) => {
-            out.push('[');
-            for (i, item) in a.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                write(item, out);
-            }
-            out.push(']');
-        }
-        Value::Object(o) => {
-            out.push('{');
-            for (i, (k, item)) in o.iter().enumerate() {
-                if i > 0 {
-                    out.push(',');
-                }
-                write_str(k, out);
-                out.push(':');
-                write(item, out);
-            }
-            out.push('}');
-        }
-    }
-}
-
-fn write_str(s: &str, out: &mut String) {
-    out.push('"');
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0c}' => out.push_str("\\f"),
-            '\u{2028}' => out.push_str("\\u2028"),
-            '\u{2029}' => out.push_str("\\u2029"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out.push('"');
 }
 
 /// A request body as DRF's `JSONParser` reads it; Err: the message after "JSON parse error - ".
@@ -380,7 +328,7 @@ mod tests {
 
     #[test]
     fn dumps_like_drf() {
-        let v = json!({"a": [1, 1.5, 1e16, null], "é": "\u{2028}\n\u{1}"});
-        assert_eq!(dumps(&v), "{\"a\":[1,1.5,1e+16,null],\"é\":\"\\u2028\\n\\u0001\"}");
+        let v = json!({"a": [1, 1.5, 1e16, null], "é": "\u{2028}\n\u{1}\u{7f}\u{1f600}"});
+        assert_eq!(dumps(&v), "{\"a\":[1,1.5,1e+16,null],\"é\":\"\\u2028\\n\\u0001\u{7f}\u{1f600}\"}");
     }
 }

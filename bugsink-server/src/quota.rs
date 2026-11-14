@@ -15,7 +15,7 @@ use sqlx::Row;
 use uuid::Uuid;
 
 use crate::event_counter::{Counted, Period, Threshold, ThresholdState, check_for_thresholds};
-use crate::grouping::py::json_dumps;
+use crate::py::json_dumps;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Limit(pub Option<i64>);

@@ -8,14 +8,15 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
-use crate::grouping::py::{is_space, strip};
+use crate::forms::REQUIRED;
+use crate::py::{is_space, strip};
 
 /// `forms.EmailField`: strips the value, then `validate_email`. The cleaned address, or Django's message.
 pub fn clean_email(value: &str) -> Result<String, &'static str> {
     const INVALID: &str = "Enter a valid email address.";
     let value = strip(value);
     if value.is_empty() {
-        return Err("This field is required.");
+        return Err(REQUIRED);
     }
     if value.chars().count() > 320 {
         return Err(INVALID);
@@ -70,11 +71,27 @@ pub struct UserAttributes<'a> {
     pub email: &'a str,
 }
 
+/// The `User.username` model field's own checks: `UnicodeUsernameValidator` and `max_length=150`.
+pub fn username_errors(username: &str) -> Vec<String> {
+    static USERNAME: OnceLock<Regex> = OnceLock::new();
+    let mut errors = Vec::new();
+    if !USERNAME.get_or_init(|| Regex::new(r"^[\w.@+-]+\z").unwrap()).is_match(username) {
+        errors.push(
+            "Enter a valid username. This value may contain only letters, numbers, and @/./+/-/_ characters.".into(),
+        );
+    }
+    let len = username.chars().count();
+    if len > 150 {
+        errors.push(format!("Ensure this value has at most 150 characters (it has {len})."));
+    }
+    errors
+}
+
 /// `SetPasswordForm`'s new password: required, then `validate_password` with upstream's validators, in their order;
 /// empty when the password is fine. (Python's `isdigit` is approximated by `char::is_numeric`.)
 pub fn password_errors(password: &str, user: &UserAttributes) -> Vec<String> {
     if password.is_empty() {
-        return vec!["This field is required.".into()];
+        return vec![REQUIRED.into()];
     }
     let mut errors = Vec::new();
     if let Some(attribute) = too_similar(password, user) {

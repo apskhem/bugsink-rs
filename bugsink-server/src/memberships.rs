@@ -1,21 +1,19 @@
 //! Team and project memberships, as upstream Bugsink 2.6.3's `teams/` and `projects/` views and models: who may do
 //! what (admins, `TEAM_CREATION`, `USER_REGISTRATION`, `SINGLE_USER`/`SINGLE_TEAM`), inviting people by email address
 //! (creating not-yet-active users for new addresses), invitation emails or links to pass on when email isn't set up
-//! (`email_backend_delivers_mail`), and the email-verification tokens new users set their password with.
+//! (`email_backend_delivers_mail`), and joining or leaving yourself. New users set their password with an email
+//! verification token (`accounts::self_service`).
 
 use std::sync::Arc;
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bugsink_db::{PgPool, Postgres, Transaction};
-use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use uuid::Uuid;
 
-use crate::accounts::User;
-use crate::alerts::py_bool;
-use crate::alerts::{AlertSettings, email, template};
+use crate::accounts::{self, User, self_service};
+use crate::alerts::AlertSettings;
+use crate::mail::{self, template};
+use crate::py::py_bool;
 use crate::tasks;
 
 pub const ROLE_MEMBER: i32 = 0;
@@ -115,6 +113,33 @@ impl Group {
         }
     }
 
+    pub fn noun(self) -> &'static str {
+        match self {
+            Self::Team(_) => "team",
+            Self::Project(_) => "project",
+        }
+    }
+
+    /// The team exists, or the project exists and isn't deleted.
+    pub async fn exists(self, pool: &PgPool) -> sqlx::Result<bool> {
+        match self {
+            Self::Team(id) => sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM teams_team WHERE id = $1)").bind(id),
+            Self::Project(id) => {
+                sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM projects_project WHERE id = $1 AND NOT is_deleted)")
+                    .bind(id)
+            }
+        }
+        .fetch_one(pool)
+        .await
+    }
+
+    pub async fn is_admin(self, pool: &PgPool, user: &User) -> sqlx::Result<bool> {
+        match self {
+            Self::Team(id) => is_team_admin(pool, user, Some(id)).await,
+            Self::Project(id) => is_project_admin(pool, user, id).await,
+        }
+    }
+
     fn path(self) -> String {
         match self {
             Self::Team(id) => format!("/teams/{id}"),
@@ -166,6 +191,20 @@ pub async fn is_project_admin(pool: &PgPool, user: &User, project_id: i64) -> sq
     .fetch_one(pool)
     .await?;
     Ok(admin || is_team_admin(pool, user, team_id).await?)
+}
+
+/// `user_has_project_membership_access`: superusers, and accepted members of the project.
+pub async fn has_project_access(pool: &PgPool, user: &User, project_id: i64) -> sqlx::Result<bool> {
+    if user.is_superuser {
+        return Ok(true);
+    }
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM projects_projectmembership WHERE project_id = $1 AND user_id = $2 AND accepted)",
+    )
+    .bind(project_id)
+    .bind(user.id)
+    .fetch_one(pool)
+    .await
 }
 
 #[derive(Debug, Serialize, sqlx::FromRow)]
@@ -241,6 +280,79 @@ pub async fn remove_member(pool: &PgPool, group: Group, user_id: i64) -> sqlx::R
     .execute(pool)
     .await?;
     Ok(deleted.rows_affected() > 0)
+}
+
+/// What joining a team or project yourself came to.
+pub enum Join {
+    Joined,
+    AlreadyMember,
+    NotJoinable,
+}
+
+/// `team_list` "join": joinable teams (or any, for superusers). None: no such team.
+pub async fn join_team(pool: &PgPool, user: &User, id: Uuid) -> sqlx::Result<Option<Join>> {
+    let Some(visibility): Option<i32> =
+        sqlx::query_scalar("SELECT visibility FROM teams_team WHERE id = $1").bind(id).fetch_optional(pool).await?
+    else {
+        return Ok(None);
+    };
+    if visibility > 1 && !user.is_superuser {
+        return Ok(Some(Join::NotJoinable));
+    }
+    Ok(Some(join(pool, Group::Team(id), user.id).await?))
+}
+
+/// `project_list` "join": through your team or when open to anyone (any, for superusers). None: no such project.
+/// Already being a member (or invited) counts before not being allowed to join.
+pub async fn join_project(pool: &PgPool, user: &User, id: i64) -> sqlx::Result<Option<Join>> {
+    let Some(joinable): Option<bool> = sqlx::query_scalar(
+        "SELECT p.visibility <= 1 OR EXISTS (SELECT 1 FROM teams_teammembership t
+                                             WHERE t.team_id = p.team_id AND t.user_id = $2 AND t.accepted)
+         FROM projects_project p WHERE p.id = $1",
+    )
+    .bind(id)
+    .bind(user.id)
+    .fetch_optional(pool)
+    .await?
+    else {
+        return Ok(None);
+    };
+    if !joinable && !user.is_superuser {
+        let member = membership(pool, Group::Project(id), user.id).await?.is_some();
+        return Ok(Some(if member { Join::AlreadyMember } else { Join::NotJoinable }));
+    }
+    Ok(Some(join(pool, Group::Project(id), user.id).await?))
+}
+
+async fn join(pool: &PgPool, group: Group, user_id: i64) -> sqlx::Result<Join> {
+    let added = add_member(pool, group, user_id, ROLE_MEMBER, true).await?;
+    Ok(if added { Join::Joined } else { Join::AlreadyMember })
+}
+
+/// `_leave_team`: the last accepted admin can't leave. None: no membership (404).
+pub async fn leave_team(pool: &PgPool, user_id: i64, id: Uuid, accepted_only: bool) -> sqlx::Result<Option<bool>> {
+    let Some((role, accepted)) = membership(pool, Group::Team(id), user_id).await? else {
+        return Ok(None);
+    };
+    if accepted_only && !accepted {
+        return Ok(None);
+    }
+    if accepted && role == ROLE_ADMIN {
+        let other_admins: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM teams_teammembership
+                            WHERE team_id = $1 AND role = $2 AND accepted AND user_id <> $3)",
+        )
+        .bind(id)
+        .bind(ROLE_ADMIN)
+        .bind(user_id)
+        .fetch_one(pool)
+        .await?;
+        if !other_admins {
+            return Ok(Some(false));
+        }
+    }
+    remove_member(pool, Group::Team(id), user_id).await?;
+    Ok(Some(true))
 }
 
 /// Sets what is given of (role, send_email_alerts).
@@ -344,7 +456,7 @@ pub async fn invite(
     } else if is_active {
         Some(group.accept_url(base_url))
     } else if created {
-        let token = create_email_verification(&mut tx, user_id).await?;
+        let token = self_service::create_email_verification(&mut tx, user_id).await?;
         Some(group.accept_new_user_url(base_url, &token))
     } else {
         None
@@ -357,33 +469,7 @@ pub async fn invite(
 /// `User.objects.get_or_create(email=email, defaults={'username': email, 'is_active': False})`, the model's defaults
 /// spelled out.
 async fn create_invited_user(tx: &mut Transaction<'_, Postgres>, email: &str) -> sqlx::Result<i64> {
-    sqlx::query_scalar(
-        "INSERT INTO auth_user (password, last_login, is_superuser, username, first_name, last_name, email, is_staff,
-             is_active, date_joined, send_email_alerts, theme_preference, language)
-         VALUES ('', NULL, false, $1, '', '', $1, false, false, now(), true, 'system', 'auto') RETURNING id",
-    )
-    .bind(email)
-    .fetch_one(&mut **tx)
-    .await
-}
-
-/// `EmailVerification.objects.create(user=user, email=user.username)` with `secrets.token_urlsafe()`.
-pub(crate) async fn create_email_verification(
-    tx: &mut Transaction<'_, Postgres>,
-    user_id: i64,
-) -> sqlx::Result<String> {
-    let mut bytes = [0u8; 32];
-    rand::fill(&mut bytes);
-    let token = URL_SAFE_NO_PAD.encode(bytes);
-    sqlx::query(
-        "INSERT INTO users_emailverification (email, token, created_at, user_id)
-         SELECT username, $1, now(), id FROM auth_user WHERE id = $2",
-    )
-    .bind(&token)
-    .bind(user_id)
-    .execute(&mut **tx)
-    .await?;
-    Ok(token)
+    accounts::insert_user(&mut **tx, "", email, email, false, false).await
 }
 
 /// `_send_<team|project>_invite_email`: a new (not yet active) user gets a fresh token to set their password with.
@@ -394,8 +480,8 @@ async fn send_invite(
     is_active: bool,
     email: &str,
 ) -> anyhow::Result<()> {
-    let token = if is_active { None } else { Some(create_email_verification(tx, user_id).await?) };
-    tasks::enqueue(&mut **tx, INVITE_JOB_KIND, &InviteJob { email: email.to_owned(), group, token }).await
+    let token = if is_active { None } else { Some(self_service::create_email_verification(tx, user_id).await?) };
+    tasks::enqueue(&mut **tx, &InviteJob { email: email.to_owned(), group, token }).await
 }
 
 /// `<team|project>_members` "reinvite": email the invitation again (only when email is set up).
@@ -420,8 +506,6 @@ pub fn invite_link(base_url: &str, group: Group, is_active: bool) -> Option<Stri
     is_active.then(|| group.accept_url(base_url))
 }
 
-pub const INVITE_JOB_KIND: &str = "invite_email";
-
 #[derive(Serialize, Deserialize)]
 pub struct InviteJob {
     pub email: String,
@@ -430,9 +514,12 @@ pub struct InviteJob {
     pub token: Option<String>,
 }
 
+impl tasks::Job for InviteJob {
+    const KIND: &str = "invite_email";
+}
+
 /// `send_<team|project>_invite_email[_new_user]`.
-pub async fn handle_invite_job(pool: PgPool, payload: Value, settings: Arc<AlertSettings>) -> anyhow::Result<()> {
-    let job: InviteJob = serde_json::from_value(payload)?;
+pub async fn handle_invite_job(pool: PgPool, job: InviteJob, settings: Arc<AlertSettings>) -> anyhow::Result<()> {
     let name: Option<String> = match job.group {
         Group::Team(id) => {
             sqlx::query_scalar("SELECT name FROM teams_team WHERE id = $1").bind(id).fetch_optional(&pool)
@@ -471,50 +558,30 @@ pub async fn handle_invite_job(pool: PgPool, payload: Value, settings: Arc<Alert
     .into_iter()
     .collect();
     let subject = format!("You have been invited to join \"{name}\"");
-    email::send_rendered_email(&pool, &settings, &subject, &job.email, templates, &ctx).await
+    mail::send_rendered_email(&pool, &settings, &subject, &job.email, templates, &ctx).await
 }
 
 const PROJECT_INVITE: (&str, &str) = (
-    include_str!("alerts/templates/project_membership_invite.html"),
-    include_str!("alerts/templates/project_membership_invite.txt"),
+    include_str!("mail/templates/project_membership_invite.html"),
+    include_str!("mail/templates/project_membership_invite.txt"),
 );
 const PROJECT_INVITE_NEW_USER: (&str, &str) = (
-    include_str!("alerts/templates/project_membership_invite_new_user.html"),
-    include_str!("alerts/templates/project_membership_invite_new_user.txt"),
+    include_str!("mail/templates/project_membership_invite_new_user.html"),
+    include_str!("mail/templates/project_membership_invite_new_user.txt"),
 );
 const TEAM_INVITE: (&str, &str) = (
-    include_str!("alerts/templates/team_membership_invite.html"),
-    include_str!("alerts/templates/team_membership_invite.txt"),
+    include_str!("mail/templates/team_membership_invite.html"),
+    include_str!("mail/templates/team_membership_invite.txt"),
 );
 const TEAM_INVITE_NEW_USER: (&str, &str) = (
-    include_str!("alerts/templates/team_membership_invite_new_user.html"),
-    include_str!("alerts/templates/team_membership_invite_new_user.txt"),
+    include_str!("mail/templates/team_membership_invite_new_user.html"),
+    include_str!("mail/templates/team_membership_invite_new_user.txt"),
 );
-
-/// Deletes email verifications older than `USER_REGISTRATION_VERIFY_EMAIL_EXPIRY` (upstream does this on every
-/// request that looks one up), then finds the token's user: (verification id, user id, is_active, password).
-pub async fn email_verification(
-    pool: &PgPool,
-    users: &UserSettings,
-    token: &str,
-) -> sqlx::Result<Option<(i64, i64, bool, String)>> {
-    sqlx::query("DELETE FROM users_emailverification WHERE created_at < $1")
-        .bind(Utc::now() - chrono::TimeDelta::seconds(users.user_registration_verify_email_expiry))
-        .execute(pool)
-        .await?;
-    sqlx::query_as(
-        "SELECT v.id, u.id, u.is_active, u.password FROM users_emailverification v JOIN auth_user u ON u.id = v.user_id
-         WHERE v.token = $1",
-    )
-    .bind(token)
-    .fetch_optional(pool)
-    .await
-}
 
 /// `<team|project>_members_accept_new_user`: true when the invited user must set a password first (with the token,
 /// `accounts::reset_password`); otherwise the token is used up and the invitation can be accepted after logging in.
 pub async fn accept_new_user(pool: &PgPool, users: &UserSettings, token: &str) -> sqlx::Result<Option<bool>> {
-    let Some((verification_id, _, is_active, password)) = email_verification(pool, users, token).await? else {
+    let Some((verification_id, _, is_active, password)) = self_service::email_verification(pool, users, token).await? else {
         return Ok(None);
     };
     // `has_usable_password`: not marked unusable ("!...")

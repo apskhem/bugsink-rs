@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use sqlx::QueryBuilder;
 use sqlx::postgres::PgRow;
 
-use super::fields::{PyInt, py_int};
+use crate::py::{PyInt, py_int};
 use super::{Drf, Request, quote_plus, url_parse_qsl};
 
 /// `offset_cutoff`.
@@ -27,8 +27,10 @@ pub struct Cursor {
 pub struct Ordering {
     pub fields: Vec<(&'static str, bool)>,
     pub cast: &'static str,
-    pub page_size: i64,
 }
+
+/// Every paginated list's `page_size`.
+const PAGE_SIZE: i64 = 250;
 
 impl Ordering {
     /// Upstream's `AscDescCursorPagination`: `?order=asc|desc`, else the default.
@@ -44,7 +46,7 @@ impl Ordering {
             Some("desc") => true,
             Some(_) => return Err(Drf::invalid(json!({"order": ["Must be 'asc' or 'desc'."]}))),
         };
-        Ok(Self { fields: fields.iter().map(|f| (*f, desc)).collect(), cast, page_size: 250 })
+        Ok(Self { fields: fields.iter().map(|f| (*f, desc)).collect(), cast })
     }
 }
 
@@ -63,7 +65,7 @@ impl<T> Page<T> {
 }
 
 /// `decode_cursor`: none asked for, the one asked for, or "Invalid cursor".
-pub fn decode_cursor(req: &Request) -> Result<Option<Cursor>, Drf> {
+fn decode_cursor(req: &Request) -> Result<Option<Cursor>, Drf> {
     let Some(encoded) = req.query.get("cursor") else { return Ok(None) };
     let invalid = || Drf::detail(axum::http::StatusCode::NOT_FOUND, "Invalid cursor");
     let bytes = b64decode(encoded).ok_or_else(invalid)?;
@@ -127,17 +129,19 @@ fn b64decode(s: &str) -> Option<Vec<u8>> {
     (quad == 0).then_some(out)
 }
 
-/// `paginate_queryset`: `query` selects the rows (ending in a WHERE clause); `position` is a row's cursor position.
+/// `paginate_queryset`, at the request's cursor: `query` selects the rows (ending in a WHERE clause); `position` is a
+/// row's cursor position.
 pub async fn paginate<T>(
     pool: &PgPool,
+    req: &Request,
     mut query: QueryBuilder<Postgres>,
     ordering: &Ordering,
-    cursor: Option<Cursor>,
     position: impl Fn(&T) -> String,
 ) -> Result<Page<T>, Drf>
 where
     T: for<'r> sqlx::FromRow<'r, PgRow> + Send + Unpin,
 {
+    let cursor = decode_cursor(req)?;
     let (offset, reverse, current) = match &cursor {
         None => (0, false, None),
         Some(c) => (c.offset, c.reverse, c.position.clone()),
@@ -155,11 +159,11 @@ where
         .iter()
         .map(|(f, desc)| format!("{f} {}", if desc ^ reverse { "DESC" } else { "ASC" }))
         .collect();
-    query.push(format!(" ORDER BY {} OFFSET {offset} LIMIT {}", order.join(", "), ordering.page_size + 1));
+    query.push(format!(" ORDER BY {} OFFSET {offset} LIMIT {}", order.join(", "), PAGE_SIZE + 1));
     let mut results: Vec<T> = query.build_query_as().fetch_all(pool).await?;
 
-    let following = (results.len() as i64 > ordering.page_size).then(|| position(results.last().expect("non-empty")));
-    results.truncate(ordering.page_size as usize);
+    let following = (results.len() as i64 > PAGE_SIZE).then(|| position(results.last().expect("non-empty")));
+    results.truncate(PAGE_SIZE as usize);
     let mut page = results;
     let (has_next, has_previous, next_position, previous_position);
     if reverse {
@@ -175,7 +179,6 @@ where
         previous_position = current.clone();
     }
     let positions: Vec<String> = page.iter().map(&position).collect();
-    let page_size = ordering.page_size;
 
     // `get_next_link`
     let next = has_next.then(|| {
@@ -196,13 +199,13 @@ where
         let mut position = found.clone();
         if !positions.is_empty() && found.is_none() {
             if !has_previous {
-                offset = page_size;
+                offset = PAGE_SIZE;
                 position = None;
             } else if cursor.as_ref().is_some_and(|c| c.reverse) {
                 offset = 0;
                 position = previous_position.clone();
             } else {
-                offset = cursor.as_ref().map_or(0, |c| c.offset) + page_size;
+                offset = cursor.as_ref().map_or(0, |c| c.offset) + PAGE_SIZE;
                 position = previous_position.clone();
             }
         }
@@ -231,10 +234,10 @@ where
         let mut position = found.clone();
         if !positions.is_empty() && found.is_none() {
             if !has_next {
-                offset = page_size;
+                offset = PAGE_SIZE;
                 position = None;
             } else if cursor.as_ref().is_some_and(|c| c.reverse) {
-                offset = cursor.as_ref().map_or(0, |c| c.offset) + page_size;
+                offset = cursor.as_ref().map_or(0, |c| c.offset) + PAGE_SIZE;
                 position = next_position.clone();
             } else {
                 offset = 0;
