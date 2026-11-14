@@ -113,9 +113,9 @@ if phase == "before":
     # Issues, from events sent to our own ingest: "b" twice, so it sorts first by event count.
     mine = expect["member@example.org"]["access"]["Mine"][0]
     auth = ("X-Sentry-Auth", f"Sentry sentry_version=7, sentry_key={sentry_keys['Mine']}")
-    for message in ["a", "b", "b", "c"]:
-        status, body, _ = call("POST", f"/api/{mine}/store/", {"event_id": uuid.uuid4().hex, "message": message},
-                               headers=[auth])
+    for message, tags in [("a", {}), ("b", {"region": "eu"}), ("b", {"region": "us"}), ("c", {"region": "eu"})]:
+        status, body, _ = call("POST", f"/api/{mine}/store/",
+                               {"event_id": uuid.uuid4().hex, "message": message, "tags": tags}, headers=[auth])
         check(f"ingest {message!r}", status == 200, (status, body))
     cookie, csrf = member
 
@@ -142,6 +142,13 @@ if phase == "before":
     check("sort=events", status == 200 and page["items"][0]["calculated_value"] == "b", page)
     status, _, _ = call("GET", f"{project_issues}?state=bogus", cookie=cookie)
     check("unknown tab: 400", status == 400, status)
+    check("search: tag", sorted(issues(project_issues, state="all", q="region:eu")) == ["b", "c"], None)
+    check("search: tag and text", sorted(issues(project_issues, state="all", q="region:eu%20B")) == ["b"], None)
+    check("search: unknown tag value", issues(project_issues, state="all", q="region:mars") == {}, None)
+    status, page, _ = call("GET", f"/api/v1/issues/{ids['b']}/events?q=region:us", cookie=cookie)
+    check("search: events", status == 200 and len(page["items"]) == 1, (status, page))
+    status, _, _ = call("GET", "/api/v1/issues?q=region:eu", cookie=cookie)
+    check("search on the global list: 400", status == 400, status)
 
     status, result, _ = act(ids["a"], "resolve", cookie=cookie, csrf=csrf)
     check("resolve", status == 200 and result["applied"] and result["issue"]["is_resolved"], (status, result))

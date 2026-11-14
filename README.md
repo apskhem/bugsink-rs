@@ -43,6 +43,10 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
   that bugsink-rs rehashes at login must still work upstream, and a password change upstream must end bugsink-rs's
   sessions. Then the issue list tabs, sorts and issue actions (single, project and global bulk) end to end, on events
   sent to our own ingest.
+- `search.sh`: issue and event search (`q=`). The digest steps are replayed into a database for realistic tags; upstream
+  builds ~1,200 queries from them (tag terms quoted every way, tag pairs, tags plus text, LIKE wildcards, parser edge
+  cases incl. unclosed quotes, escapes and Unicode whitespace) and its `parse_query`, `search_issues` and
+  `search_events` must give the same results as ours on that database.
 - `user_agents.sh`: the browser/OS/device contexts (and so tags) derived from a request's User-Agent header, for the
   ~30,000 user agents in uap-core's test suite plus malformed inputs, compared with upstream's own function. The
   parser data (`bugsink-server/src/digest/ua_regexes.json`) is exported from the upstream image.
@@ -52,8 +56,8 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
 Ported and verified: ingest (envelope/store, quotas and 429s) and digest (grouping, issues, releases, regressions,
 time- and volume-based unmute, tags incl. User-Agent-derived ones, hourly counts, eviction and retention), alerts by
 email and messaging services, login with upstream's users and passwords (sessions, CSRF, membership checks on the UI
-API), issue actions (single and bulk, incl. deletion) and the issue lists' tabs, and the database bootstrap/version
-check. bugsink-rs can take over ingestion and digestion of an upstream
+API), issue actions (single and bulk, incl. deletion), the issue lists' tabs and search, and the database
+bootstrap/version check. bugsink-rs can take over ingestion and digestion of an upstream
 installation today; viewing and managing issues still needs upstream's UI (not at the same time, see below).
 
 ### Not yet ported (upstream behaviour missing)
@@ -61,9 +65,10 @@ installation today; viewing and managing issues still needs upstream's UI (not a
 In order of importance for production use (code-level gaps also have a `TODO(parity)` where they belong):
 
 1. **The UI's API.** `/api/v1` has login, logout and the current user; the project and global issue lists (tabs,
-   sorts) with issue actions; issues and events read-only otherwise. Missing:
+   sorts, search) with issue actions; an issue's events (with search); issues and events read-only otherwise. Missing:
    - accounts: signup, email confirmation, password reset, preferences, change password
-   - issues: search (`q=`); tags, history (turning points, comments), groupings and sparkline counts per issue
+   - issues: tags, history (turning points, comments), groupings and sparkline counts per issue; event navigation
+     (first/previous/next/last, also within a search)
    - projects, teams and memberships: create/edit/delete, invitations, roles, alert settings; messaging service
      setup and test messages; SDK setup pages
    - installation: users admin, auth tokens, settings and counts pages
@@ -80,8 +85,9 @@ In order of importance for production use (code-level gaps also have a `TODO(par
    maintenance (`vacuum*`, `delete_old_events`, `cleanup_*`, `make_consistent`, `create_auth_token`, ...); we have
    `migrate`, `create-project`, `serve` and `worker`.
 
-Known deliberate difference: an envelope whose event payload is not valid JSON gets a 400 at ingest. Upstream returns
-200 and drops the event during digest.
+Known deliberate differences: an envelope whose event payload is not valid JSON gets a 400 at ingest (upstream returns
+200 and drops the event during digest). A search of only whitespace (or only terms the parser skips) matches
+everything (upstream answers 500).
 
 ## Layout
 
@@ -101,6 +107,7 @@ bugsink-server/        the `bugsink` binary (src/main.rs: CLI, config, HTTP, in-
   src/alerts           alert emails (upstream's templates) and messaging services (Slack, Discord, ...), as jobs
   src/api.rs           /api/v1/... JSON API for the frontend, with upstream's access rules
   src/issues           issue actions (resolve, mute, delete, ...; single and bulk) and deleting issues' rows
+  src/search.rs        issue and event search: query parser, tag and text matching
   src/accounts         users (upstream's auth_user, Django's password hashes), login sessions, CSRF
   examples/            parity drivers used by tools/parity/
 frontend/              CSR app (separate JS workspace), built into frontend/dist/; see frontend/README.md

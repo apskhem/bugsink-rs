@@ -11,6 +11,7 @@ pub mod ingest;
 pub mod issues;
 pub mod protocol;
 pub mod quota;
+pub mod search;
 pub mod tasks;
 
 use std::sync::Arc;

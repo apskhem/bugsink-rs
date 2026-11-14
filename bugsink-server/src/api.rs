@@ -16,10 +16,12 @@ use bugsink_db::models::{Event, EventSummary, IssueSummary, Project};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sqlx::QueryBuilder;
 use uuid::Uuid;
 
 use crate::accounts::{self, CurrentUser, User};
 use crate::issues::{self, Action};
+use crate::search::{Search, Searched};
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -182,6 +184,9 @@ struct IssueListQuery {
     state: String,
     #[serde(default)]
     sort: String,
+    /// Search (`crate::search`); project issue lists only, as upstream.
+    #[serde(default)]
+    q: String,
     #[serde(default)]
     offset: i64,
     limit: Option<i64>,
@@ -217,19 +222,17 @@ impl IssueListQuery {
         }
     }
 
-    async fn fetch(&self, pool: &PgPool, project_ids: &[i64]) -> ApiResult<Paged<IssueSummary>> {
+    async fn fetch(&self, pool: &PgPool, project_ids: &[i64], search: &Search) -> ApiResult<Paged<IssueSummary>> {
         let page = self.page();
-        let items = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-            "SELECT {ISSUE_COLUMNS} FROM issues_issue WHERE project_id = ANY($1) AND NOT is_deleted AND {}
-             ORDER BY {} OFFSET $2 LIMIT $3",
-            self.state_sql()?,
-            self.order_sql()
-        )))
-        .bind(project_ids)
-        .bind(page.offset)
-        .bind(page.limit())
-        .fetch_all(pool)
-        .await?;
+        let mut qb = QueryBuilder::new(format!("SELECT {ISSUE_COLUMNS} FROM issues_issue WHERE project_id = ANY("));
+        qb.push_bind(project_ids.to_vec());
+        qb.push(format_args!(") AND NOT is_deleted AND {}", self.state_sql()?));
+        search.push_conditions(&mut qb, Searched::Issues);
+        qb.push(format_args!(" ORDER BY {} OFFSET ", self.order_sql()));
+        qb.push_bind(page.offset);
+        qb.push(" LIMIT ");
+        qb.push_bind(page.limit());
+        let items = qb.build_query_as().fetch_all(pool).await?;
         Ok(Json(Paged { items, offset: page.offset, limit: page.limit() }))
     }
 }
@@ -253,8 +256,9 @@ async fn list_issues(
     Query(query): Query<IssueListQuery>,
 ) -> ApiResult<Paged<IssueSummary>> {
     accessible_project(&state.pool, &user, project_id).await?;
-    // TODO(parity): tag search (`q=`), sparklines.
-    query.fetch(&state.pool, &[project_id]).await
+    // TODO(parity): sparklines.
+    let search = Search::prepare(&state.pool, project_id, &query.q).await?;
+    query.fetch(&state.pool, &[project_id], &search).await
 }
 
 /// `get_issue_accessible_project_ids`: the projects whose issues show up in the global issue list.
@@ -276,8 +280,11 @@ async fn global_issue_list(
     CurrentUser { user, .. }: CurrentUser,
     Query(query): Query<IssueListQuery>,
 ) -> ApiResult<Paged<IssueSummary>> {
+    if !query.q.is_empty() {
+        return Err(ApiError::BadRequest("search (q) is per project, as upstream's".into()));
+    }
     let project_ids = issue_accessible_project_ids(&state.pool, &user).await?;
-    query.fetch(&state.pool, &project_ids).await
+    query.fetch(&state.pool, &project_ids, &Search::Everything).await
 }
 
 #[derive(Deserialize)]
@@ -390,22 +397,33 @@ async fn get_issue(
 const EVENT_SUMMARY_COLUMNS: &str = "id, event_id, issue_id, digest_order, ingested_at, timestamp, level, release,
     environment, calculated_type, calculated_value";
 
+#[derive(Deserialize)]
+struct EventListQuery {
+    /// Search (`crate::search`) within the issue's events.
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    offset: i64,
+    limit: Option<i64>,
+}
+
 async fn list_events(
     State(state): State<ApiState>,
     CurrentUser { user, .. }: CurrentUser,
     Path(issue_id): Path<Uuid>,
-    Query(page): Query<Page>,
+    Query(query): Query<EventListQuery>,
 ) -> ApiResult<Paged<EventSummary>> {
-    accessible_issue(&state.pool, &user, issue_id).await?;
-    let items = sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT {EVENT_SUMMARY_COLUMNS} FROM events_event WHERE issue_id = $1
-         ORDER BY digest_order DESC OFFSET $2 LIMIT $3"
-    )))
-    .bind(issue_id)
-    .bind(page.offset)
-    .bind(page.limit())
-    .fetch_all(&state.pool)
-    .await?;
+    let issue = accessible_issue(&state.pool, &user, issue_id).await?;
+    let page = Page { offset: query.offset, limit: query.limit };
+    let search = Search::prepare(&state.pool, issue.project_id, &query.q).await?;
+    let mut qb = QueryBuilder::new(format!("SELECT {EVENT_SUMMARY_COLUMNS} FROM events_event WHERE issue_id = "));
+    qb.push_bind(issue_id);
+    search.push_conditions(&mut qb, Searched::EventsOf(issue_id));
+    qb.push(" ORDER BY digest_order DESC OFFSET ");
+    qb.push_bind(page.offset);
+    qb.push(" LIMIT ");
+    qb.push_bind(page.limit());
+    let items = qb.build_query_as().fetch_all(&state.pool).await?;
     Ok(Json(Paged { items, offset: page.offset, limit: page.limit() }))
 }
 
