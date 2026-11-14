@@ -6,9 +6,9 @@ use std::collections::HashMap;
 
 use crate::grouping::py::truncatechars;
 
-pub(super) type Context<'a> = HashMap<&'static str, &'a str>;
+pub(crate) type Context<'a> = HashMap<&'static str, &'a str>;
 
-pub(super) fn render(template: &str, ctx: &Context) -> String {
+pub(crate) fn render(template: &str, ctx: &Context) -> String {
     let mut out = String::new();
     // Nesting depth of `{% if %}` blocks, and how many of them are false (output suppressed while > 0).
     let mut conditions: Vec<bool> = Vec::new();

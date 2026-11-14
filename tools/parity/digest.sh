@@ -24,6 +24,8 @@ configs=(
     # 5-minute quota trips on every event, the hourly one regularly, the monthly one once; installation-wide hourly
     # too; the email quota runs out halfway
     "quotas:MAX_EVENTS_PER_PROJECT_PER_5_MINUTES=1 MAX_EVENTS_PER_PROJECT_PER_HOUR=5 MAX_EVENTS_PER_PROJECT_PER_MONTH=60 MAX_EVENTS_PER_HOUR=7 MAX_EMAILS_PER_MONTH=40"
+    # every project's retention capped below what it is set to (and an installation-wide cap, which only forms check)
+    "retention_cap:MAX_RETENTION_PER_PROJECT_EVENT_COUNT=30 MAX_RETENTION_EVENT_COUNT=40"
 )
 
 # upstream runs in a container on $net and reaches the capture server by name; bugsink-rs runs on the host.

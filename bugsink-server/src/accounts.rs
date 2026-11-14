@@ -7,6 +7,7 @@
 //! cross-site form cannot send without a CORS preflight that the UI API never allows.
 
 pub mod password;
+pub mod validation;
 
 use axum::Json;
 use axum::extract::{FromRequestParts, State};
@@ -152,8 +153,6 @@ pub async fn login(
         None
     };
 
-    let token = random_hex(32);
-    let csrf_token = random_hex(32);
     let mut tx = state.pool.begin().await?;
     if let Some(new_hash) = &new_hash {
         sqlx::query("UPDATE auth_user SET password = $1 WHERE id = $2")
@@ -162,13 +161,25 @@ pub async fn login(
             .execute(&mut *tx)
             .await?;
     }
+    start_session(&state, tx, &headers, user_id).await
+}
+
+/// Django's `login()`: `last_login`, a fresh session (replacing the request's), the cookie; commits `tx`.
+async fn start_session(
+    state: &ApiState,
+    mut tx: bugsink_db::Transaction<'_, bugsink_db::Postgres>,
+    headers: &HeaderMap,
+    user_id: i64,
+) -> Result<Response, ApiError> {
+    let token = random_hex(32);
+    let csrf_token = random_hex(32);
     let user: User = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "UPDATE auth_user u SET last_login = now() WHERE u.id = $1 RETURNING {USER_COLUMNS}"
     )))
     .bind(user_id)
     .fetch_one(&mut *tx)
     .await?;
-    if let Some(old) = session_cookie(&headers) {
+    if let Some(old) = session_cookie(headers) {
         sqlx::query("DELETE FROM bsrs_session WHERE key_hash = $1")
             .bind(sha256(old.as_bytes()))
             .execute(&mut *tx)
@@ -189,6 +200,54 @@ pub async fn login(
 
     let cookie = set_cookie(&token, SESSION_AGE.num_seconds(), state.secure_cookie);
     Ok(([(SET_COOKIE, cookie)], Json(Me { user, csrf_token })).into_response())
+}
+
+#[derive(Deserialize)]
+pub struct ResetPasswordRequest {
+    password: String,
+}
+
+/// `reset_password` with an email-verification token (from an invitation, so far): sets the password (Django's
+/// validators), activates the user (the token proves the address) and logs them in.
+pub async fn reset_password(
+    State(state): State<ApiState>,
+    axum::extract::Path(token): axum::extract::Path<String>,
+    headers: HeaderMap,
+    Json(req): Json<ResetPasswordRequest>,
+) -> Result<Response, ApiError> {
+    if !same_origin(&headers, &state.origin) {
+        return Err(ApiError::CsrfFailed);
+    }
+    let Some((verification_id, user_id, _, _)) =
+        crate::memberships::email_verification(&state.pool, &state.settings.users, &token).await?
+    else {
+        return Err(ApiError::NotFound);
+    };
+    let (username, first_name, last_name, email): (String, String, String, String) =
+        sqlx::query_as("SELECT username, first_name, last_name, email FROM auth_user WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(&state.pool)
+            .await?;
+    let attributes = validation::UserAttributes {
+        username: &username,
+        first_name: &first_name,
+        last_name: &last_name,
+        email: &email,
+    };
+    let errors = validation::password_errors(&req.password, &attributes);
+    if !errors.is_empty() {
+        return Err(ApiError::Invalid(std::collections::BTreeMap::from([("password", errors)])));
+    }
+    let password = req.password;
+    let encoded = tokio::task::spawn_blocking(move || password::make(&password)).await.map_err(ApiError::internal)?;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("UPDATE auth_user SET is_active = true, password = $2 WHERE id = $1")
+        .bind(user_id)
+        .bind(encoded)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM users_emailverification WHERE id = $1").bind(verification_id).execute(&mut *tx).await?;
+    start_session(&state, tx, &headers, user_id).await
 }
 
 pub async fn logout(State(state): State<ApiState>, current: CurrentUser) -> Result<Response, ApiError> {

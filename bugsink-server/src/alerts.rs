@@ -7,11 +7,12 @@
 //! As with upstream's tasks, nothing is retried once something may have been sent: failures are logged, and for
 //! messaging services also stored on the service's row.
 //!
-//! TODO(parity): the UI's "send test message" for messaging services; `TIME_ZONE` (dates in unmute reasons are UTC).
+//! TODO(parity): `TIME_ZONE` (dates in unmute reasons are UTC).
 
-mod email;
+pub(crate) mod email;
 pub mod messaging;
-mod template;
+pub mod setup;
+pub(crate) mod template;
 mod webhook;
 
 use std::sync::Arc;

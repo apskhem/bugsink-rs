@@ -73,6 +73,36 @@ pub(super) async fn send_alert(m: &AlertMessage<'_>) -> Result<(), Failure> {
         .map_err(|failure| mask_token(failure, bot_token))
 }
 
+/// `telegram_backend_send_test_message`: (URL, payload, bot token to mask in failures).
+pub(super) fn test_request(
+    config: &Value,
+    project_name: &str,
+    display_name: &str,
+) -> Result<(String, Value, String), Failure> {
+    let key_error = |key: &str| Failure { error_type: "KeyError", message: format!("'{key}'"), response: None };
+    let bot_token = config.get("bot_token").and_then(Value::as_str).ok_or_else(|| key_error("bot_token"))?;
+    let chat_id = config.get("chat_id").ok_or_else(|| key_error("chat_id"))?;
+    let text = format!(
+        concat!(
+            "<b>TEST issue</b>\n\nTest message by Bugsink to test the webhook setup.\n\n",
+            "<b>Project:</b> {}\n<b>Message Backend:</b> {}",
+        ),
+        safe_html(project_name),
+        safe_html(display_name),
+    );
+    let mut data = json!({"chat_id": chat_id, "text": text, "parse_mode": "HTML"});
+    if let Some(thread_id) = config.get("message_thread_id").filter(|t| !t.is_null())
+        && chat_id_supports_message_thread_id(chat_id)
+    {
+        data["message_thread_id"] = thread_id.clone();
+    }
+    Ok((format!("https://api.telegram.org/bot{bot_token}/sendMessage"), data, bot_token.to_owned()))
+}
+
+pub(super) fn masked(failure: Failure, bot_token: &str) -> Failure {
+    mask_token(failure, bot_token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

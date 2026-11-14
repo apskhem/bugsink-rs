@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use anyhow::Context;
 use axum::Router;
 use bugsink_db::PgPool;
-use bugsink_server::{Settings, accounts, api, grouping, ingest, job_registry, tasks, vacuum};
+use bugsink_server::{Settings, accounts, api, grouping, ingest, job_registry, projects, tasks, vacuum};
 use clap::{Args, Parser, Subcommand};
 use tokio::sync::watch;
 use tower_http::services::{ServeDir, ServeFile};
@@ -44,7 +44,7 @@ enum Command {
     /// Create the upstream Bugsink schema in an empty database, or verify an existing one; then apply our own
     /// (bsrs_*) migrations.
     Migrate,
-    /// Create a project and print its DSN. Stopgap until the UI can do it.
+    /// Create a project (in no team, without members) and print its DSN.
     CreateProject { name: String },
     /// Clean up stale rows, as upstream's `vacuum` command; with no flags, all of the below. Nothing runs this
     /// automatically (upstream neither): schedule it, e.g. daily.
@@ -137,7 +137,7 @@ async fn serve(pool: PgPool, args: ServeArgs, settings: Settings) -> anyhow::Res
 
     let app = Router::new()
         .merge(ingest::router(pool.clone(), args.max_body_bytes, settings.quotas, client_addr))
-        .merge(api::router(api::ApiState::new(pool.clone(), settings.alerts.base_url())?))
+        .merge(api::router(api::ApiState::new(pool.clone(), settings.clone())?))
         .fallback_service(frontend)
         .layer(TraceLayer::new_for_http());
 
@@ -159,15 +159,8 @@ async fn serve(pool: PgPool, args: ServeArgs, settings: Settings) -> anyhow::Res
 }
 
 async fn create_project(pool: &PgPool, name: &str, base_url: &str) -> anyhow::Result<()> {
-    let slug: String = name
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect::<String>()
-        .split('-')
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>()
-        .join("-");
+    let mut tx = pool.begin().await?;
+    let slug = projects::unique_slug(&mut tx, name).await?;
     // Django model defaults are not database defaults: every NOT NULL column is spelled out, with upstream's values.
     let (id, key): (i64, Uuid) = sqlx::query_as(
         "INSERT INTO projects_project (
@@ -181,21 +174,20 @@ async fn create_project(pool: &PgPool, name: &str, base_url: &str) -> anyhow::Re
     .bind(&slug)
     .bind(bugsink_db::PROJECT_VISIBILITY_TEAM_MEMBERS)
     .bind(grouping::CURRENT_MECHANISM)
-    .fetch_one(pool)
+    .fetch_one(&mut *tx)
     .await
     .context("creating project")?;
+    tx.commit().await?;
 
-    let (scheme, host) = base_url.trim_end_matches('/').split_once("://").context("base URL needs a scheme")?;
-    println!("{scheme}://{}@{host}/{id}", key.simple());
+    println!("{}", projects::dsn(base_url, id, key));
     Ok(())
 }
 
 async fn create_superuser(pool: &PgPool, email: &str) -> anyhow::Result<()> {
-    // Upstream validates the address with Django's validate_email; this only catches the obvious mistakes.
-    anyhow::ensure!(
-        email.split_once('@').is_some_and(|(local, domain)| !local.is_empty() && domain.contains('.')),
-        "{email:?} is not an email address"
-    );
+    // CREATE_SUPERUSER's check
+    if accounts::validation::clean_email(email).is_err() {
+        anyhow::bail!("{email:?} is not a valid email address");
+    }
     let mut password = String::new();
     std::io::stdin().read_line(&mut password).context("reading the password from stdin")?;
     let password = password.strip_suffix('\n').unwrap_or(&password);

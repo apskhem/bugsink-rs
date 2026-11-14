@@ -145,6 +145,8 @@ pub async fn digest(
     let Some(mut project) = lock_project(&mut tx, job.project_id).await? else {
         return Ok(Outcome::ProjectGone);
     };
+    // `get_retention_max_event_count` (only read below, never written back)
+    project.retention_max_event_count = quotas.retention_max_event_count(project.retention_max_event_count);
     if project.retention_max_event_count == 0 {
         // `handle_zero_retention`: evict-before-add can't get below 1, so stored events are deleted by a job instead.
         if project.stored_event_count > 0 {

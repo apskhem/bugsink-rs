@@ -271,6 +271,12 @@ async fn validate_destination(settings: &WebhookSettings, url: &Url) -> Result<V
     Ok(ips)
 }
 
+/// `validate_webhook_url`, as the config forms use it: the URL's checks and its destination's (resolving the host).
+pub async fn validate_webhook_url(settings: &WebhookSettings, webhook_url: &str) -> Result<(), String> {
+    let url = parse_webhook_url(webhook_url).map_err(|f| f.message)?;
+    validate_destination(settings, &url).await.map(|_| ()).map_err(|f| f.message)
+}
+
 /// `BaseWebhookBackend.safe_post` + `raise_for_status()`: POSTs a JSON body to the checked address.
 pub async fn post_json(settings: &WebhookSettings, webhook_url: &str, body: String) -> Result<(), Failure> {
     let url = parse_webhook_url(webhook_url)?;

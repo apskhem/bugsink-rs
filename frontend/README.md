@@ -25,12 +25,13 @@ each page needs; ✅ means it exists already.
 | Login / logout | `templates/bugsink/login.html`, `users/logged_out.html` | ✅ `POST /api/v1/auth/login`, `/logout`, `GET /me` |
 | Signup, confirm email, reset password | `templates/signup.html`, `users/{resend_confirmation,request_reset_password,reset_password}.html` | `/api/v1/auth/*` |
 | Preferences, change password | `users/{preferences,change_password}.html` | `/api/v1/me` |
-| Project list | `projects/project_list.html` | ✅ `GET /projects` (incl. 24h sparkline) |
-| Project new / edit | `projects/project_{new,edit}.html` | `POST/PATCH /projects` |
-| Project members, invite, accept | `projects/project_members*.html`, `project_member_settings.html` | `/projects/{id}/members` |
-| SDK setup (Python, JS, PHP, Go) | `projects/project_sdk_setup*.html` | project DSN (from project) |
-| Alert/messaging setup | `projects/project_alerts_setup.html`, `project_messaging_service_{new,edit}.html` | `/projects/{id}/messaging-services` |
-| Team list / new / edit / members | `teams/*.html` | `/teams`, `/teams/{id}/members` |
+| Project list | `projects/project_list.html` | ✅ `GET /projects?tab=mine\|teams\|other` (incl. 24h sparkline), `POST /projects/{id}/join\|leave` |
+| Project new / edit / delete | `projects/project_{new,edit}.html` | ✅ `GET /projects/new` (teams, defaults), `POST /projects`, `GET/PATCH/DELETE /projects/{id}` |
+| Project members, invite, accept | `projects/project_members*.html`, `project_member_settings.html` | ✅ `/projects/{id}/members[/{user_id}[/reinvite\|/invite-link]]`, `POST /projects/{id}/accept\|decline` |
+| SDK setup (Python, JS, PHP, Go) | `projects/project_sdk_setup*.html` | ✅ `GET /projects/{id}/sdk-setup` (DSN, event count to poll) |
+| Alert/messaging setup | `projects/project_alerts_setup.html`, `project_messaging_service_{new,edit}.html` | ✅ `/projects/{id}/messaging-services[/{id}[/test]]` |
+| Team list / new / edit / members | `teams/*.html` | ✅ `/teams?tab=mine\|other`, `/teams/{id}` (+ `/join`, `/leave`), `/teams/{id}/members...` (as for projects) |
+| Accepting an invitation as a new user | `users/reset_password.html` | ✅ `POST /{teams\|projects}/{id}/members/accept-new-user` (`needs_password`), `POST /auth/reset-password/{token}` |
 | **Issue list** (open/resolved/muted/all, search, bulk actions) | `issues/issue_list.html` | ✅ `GET /projects/{id}/issues?state=&sort=&q=`, bulk ✅ `POST /projects/{id}/issues/actions` |
 | Global issue list | `issues/issue_list.html` | ✅ `GET /issues?state=&sort=`, bulk ✅ `POST /issues/actions` |
 | Issue header | `issues/base.html` | ✅ `GET /issues/{id}` (title, friendly id, releases, mute conditions), tag summary ✅ `GET /issues/{id}/tags` |
@@ -80,6 +81,18 @@ highlighting of code context, formatting variables and dates):
 - `key_info`, `logentry_info`, `deployment_info`: label/value pairs of the details tab, upstream's labels and order;
   `contexts` incl. browser and OS derived from the User-Agent; `request_repr`: "METHOD url".
 - `breadcrumbs`: the list, or null.
+
+Management: forms answer 400 with `errors` by field and Django's messages (`team`, `name`, `visibility`,
+`retention_max_event_count`, `grouping_mechanism`, `email`, `role`, `password`, `display_name`, `kind`, and a
+messaging service's config fields `webhook_url`, `channel`, `bot_token`, `chat_id`, `message_thread_id`). Roles: 0
+member, 1 admin. Visibility: 1 joinable, 10 discoverable, 99 team members (projects) or hidden (teams).
+`send_email_alerts`: true, false or null ("as per the team's or the user's setting").
+
+Invitation links (in emails sent by either side, or shown when email isn't set up) use upstream's paths, so the
+frontend must route them: `/teams/{id}/members/accept/`, `/projects/{id}/members/accept/` (log in, then accept or
+decline) and `/teams/{id}/members/accept/{token}/`, `/projects/{id}/members/accept/{token}/` (a new user: post the
+token to `accept-new-user`; with `needs_password`, have them set one with `POST /api/v1/auth/reset-password/{token}`,
+which logs them in, then accept).
 
 Not ported: Django admin, `csrf_debug`, debug email previews. Email templates stay server-side (backend renders
 alert/invite emails).

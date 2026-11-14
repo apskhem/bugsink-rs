@@ -39,6 +39,23 @@ pub(super) async fn send_alert(m: &AlertMessage<'_>) -> Result<(), Failure> {
     post_json(&m.settings.webhooks, webhook_url, json_dumps(&payload(m))).await
 }
 
+/// `mattermost_backend_send_test_message`.
+pub(super) fn test_payload(project_name: &str, display_name: &str, channel: Option<&Value>) -> Value {
+    let mut data = json!({"text": "### Test message by Bugsink to test the webhook setup.",
+        "attachments": [{
+            "title": "TEST issue",
+            "text": "Test message by Bugsink to test the webhook setup.",
+            "fields": [
+                {"title": "project", "value": safe_markdown(project_name)},
+                {"title": "message backend", "value": safe_markdown(display_name)},
+            ],
+        }]});
+    if let Some(channel) = channel.filter(|c| crate::grouping::py::truthy(c)) {
+        data["channel"] = channel.clone();
+    }
+    data
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

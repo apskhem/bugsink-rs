@@ -52,6 +52,19 @@ pub(super) async fn send_alert(m: &AlertMessage<'_>) -> Result<(), Failure> {
     post_json(&m.settings.webhooks, webhook_url, json_dumps(&payload(m))).await
 }
 
+/// `discord_backend_send_test_message`.
+pub(super) fn test_payload(project_name: &str, display_name: &str) -> Value {
+    json!({"embeds": [{
+        "title": "TEST issue",
+        "description": "Test message by Bugsink to test the webhook setup.",
+        "color": 0x7289DA,
+        "fields": [
+            {"name": "Project", "value": project_name, "inline": true},
+            {"name": "Message Backend", "value": display_name, "inline": true},
+        ],
+    }]})
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

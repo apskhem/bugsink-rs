@@ -18,6 +18,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::Project;
+use crate::quota::QuotaSettings;
 use crate::tasks;
 
 pub const DELETE_BY_AGE_JOB_KIND: &str = "delete_by_age_until_under_retention_max";
@@ -295,7 +296,7 @@ pub(crate) async fn enqueue_delete_by_age(tx: &mut Transaction<'_, Postgres>, pr
 /// Job handler for `DELETE_BY_AGE_JOB_KIND` (`delete_by_age_until_under_retention_max`): deletes the oldest events,
 /// 500 per job, until the project is under its retention maximum. Digest schedules it when retention is zero, where
 /// evict-before-add can't work.
-pub async fn handle_delete_by_age_job(pool: PgPool, payload: Value) -> anyhow::Result<()> {
+pub async fn handle_delete_by_age_job(pool: PgPool, payload: Value, quotas: QuotaSettings) -> anyhow::Result<()> {
     let job: DeleteByAgeJob = serde_json::from_value(payload)?;
     let mut tx = pool.begin().await?;
 
@@ -308,6 +309,7 @@ pub async fn handle_delete_by_age_job(pool: PgPool, payload: Value) -> anyhow::R
     else {
         return Ok(());
     };
+    let max_event_count = quotas.retention_max_event_count(max_event_count);
     let how_many_too_many = i64::from((stored_event_count - max_event_count).max(0));
     if how_many_too_many == 0 {
         return Ok(());

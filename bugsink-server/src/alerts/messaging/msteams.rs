@@ -17,20 +17,20 @@ fn safe_markdown(text: &str) -> String {
         .replace('-', "\\-")
 }
 
-/// `_as_message`: the card, wrapped in a message attachment.
+/// `_as_message`: the card (with `actions`, if any), wrapped in a message attachment.
 fn as_message(body: Vec<Value>, actions: Value) -> Value {
+    let mut content = json!({
+        "type": "AdaptiveCard",
+        "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+        "version": "1.4",
+        "body": body,
+    });
+    if crate::grouping::py::truthy(&actions) {
+        content["actions"] = actions;
+    }
     json!({
         "type": "message",
-        "attachments": [{
-            "contentType": "application/vnd.microsoft.card.adaptive",
-            "content": {
-                "type": "AdaptiveCard",
-                "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
-                "version": "1.4",
-                "body": body,
-                "actions": actions,
-            },
-        }],
+        "attachments": [{"contentType": "application/vnd.microsoft.card.adaptive", "content": content}],
     })
 }
 
@@ -56,6 +56,21 @@ fn payload(m: &AlertMessage<'_>) -> Value {
 pub(super) async fn send_alert(m: &AlertMessage<'_>) -> Result<(), Failure> {
     let webhook_url = m.config_str("webhook_url")?;
     post_json(&m.settings.webhooks, webhook_url, json_dumps(&payload(m))).await
+}
+
+/// `msteams_backend_send_test_message`.
+pub(super) fn test_payload(project_name: &str, display_name: &str) -> Value {
+    as_message(
+        vec![
+            json!({"type": "TextBlock", "text": "TEST issue", "size": "Large", "weight": "Bolder", "wrap": true}),
+            json!({"type": "TextBlock", "text": "Test message by Bugsink to test the webhook setup.", "wrap": true}),
+            json!({"type": "FactSet", "facts": [
+                {"title": "project", "value": safe_markdown(project_name)},
+                {"title": "message backend", "value": safe_markdown(display_name)},
+            ]}),
+        ],
+        Value::Null,
+    )
 }
 
 #[cfg(test)]

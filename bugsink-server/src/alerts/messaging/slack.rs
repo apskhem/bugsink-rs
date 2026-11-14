@@ -38,3 +38,17 @@ pub(super) async fn send_alert(m: &AlertMessage<'_>) -> Result<(), Failure> {
     let data = json!({"text": sections[0]["text"]["text"].clone(), "blocks": Value::Array(sections)});
     post_json(&m.settings.webhooks, webhook_url, json_dumps(&data)).await
 }
+
+/// `slack_backend_send_test_message`.
+pub(super) fn test_payload(project_name: &str, display_name: &str) -> Value {
+    json!({"text": "Test message by Bugsink to test the webhook setup.",
+           "blocks": [
+               {"type": "header", "text": {"type": "plain_text", "text": "TEST issue"}},
+               {"type": "section",
+                "text": {"type": "mrkdwn", "text": "Test message by Bugsink to test the webhook setup."}},
+               {"type": "section", "fields": [
+                   {"type": "mrkdwn", "text": format!("*project*: {}", safe_markdown(project_name))},
+                   {"type": "mrkdwn", "text": format!("*message backend*: {}", safe_markdown(display_name))},
+               ]},
+           ]})
+}

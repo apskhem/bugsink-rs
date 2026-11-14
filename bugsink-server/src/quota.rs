@@ -17,7 +17,15 @@ use uuid::Uuid;
 use crate::event_counter::{Counted, Period, Threshold, ThresholdState, check_for_thresholds};
 use crate::grouping::py::json_dumps;
 
-/// Upstream's settings of the same names (`MAX_EVENTS_PER_*`), with upstream's defaults.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Limit(pub Option<i64>);
+
+/// Upstream's `int_or_none`: anything that isn't an integer means "no limit".
+pub(crate) fn int_or_none(s: &str) -> Result<Limit, String> {
+    Ok(Limit(s.trim().parse().ok()))
+}
+
+/// Upstream's settings of the same names (`MAX_EVENTS_PER_*`, and the retention caps), with upstream's defaults.
 #[derive(clap::Args, Clone, Copy, Debug)]
 pub struct QuotaSettings {
     #[arg(long, env = "MAX_EVENTS_PER_PROJECT_PER_5_MINUTES", default_value_t = 1_000)]
@@ -32,6 +40,12 @@ pub struct QuotaSettings {
     pub max_events_per_hour: i64,
     #[arg(long, env = "MAX_EVENTS_PER_MONTH", default_value_t = 1_000_000)]
     pub max_events_per_month: i64,
+    /// Caps every project's retention (`get_retention_max_event_count`), also below what it is set to.
+    #[arg(long, env = "MAX_RETENTION_PER_PROJECT_EVENT_COUNT", default_value = "None", value_parser = int_or_none)]
+    pub max_retention_per_project_event_count: Limit,
+    /// The most all projects' retention settings may add up to (checked when a project's retention is set).
+    #[arg(long, env = "MAX_RETENTION_EVENT_COUNT", default_value = "None", value_parser = int_or_none)]
+    pub max_retention_event_count: Limit,
 }
 
 impl Default for QuotaSettings {
@@ -43,6 +57,8 @@ impl Default for QuotaSettings {
             max_events_per_5_minutes: 1_000,
             max_events_per_hour: 5_000,
             max_events_per_month: 1_000_000,
+            max_retention_per_project_event_count: Limit(None),
+            max_retention_event_count: Limit(None),
         }
     }
 }
@@ -55,6 +71,14 @@ pub enum Scope {
 }
 
 impl QuotaSettings {
+    /// `Project.get_retention_max_event_count`.
+    pub fn retention_max_event_count(&self, configured: i32) -> i32 {
+        match self.max_retention_per_project_event_count.0 {
+            Some(cap) => i64::from(configured).min(cap) as i32,
+            None => configured,
+        }
+    }
+
     fn thresholds(&self, scope: Scope) -> [Threshold; 3] {
         let (per_5_minutes, per_hour, per_month) = match scope {
             Scope::Installation => (self.max_events_per_5_minutes, self.max_events_per_hour, self.max_events_per_month),

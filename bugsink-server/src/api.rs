@@ -6,13 +6,15 @@
 //! Every endpoint except health and login needs a session (`accounts::CurrentUser`) and checks access like upstream's
 //! views: superusers see everything; issues and events need an accepted membership of their project.
 
+use std::sync::Arc;
+
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use bugsink_db::PgPool;
-use bugsink_db::models::{Event, EventSummary, IssueSummary, Project};
+use bugsink_db::models::{Event, EventSummary, IssueSummary};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -20,11 +22,15 @@ use sqlx::QueryBuilder;
 use uuid::Uuid;
 
 mod issue_pages;
+mod members;
+mod project_admin;
+mod teams;
 
 use crate::accounts::{self, CurrentUser, User};
 use crate::issues::pages;
 use crate::issues::{self, Action};
 use crate::search::{Search, Searched};
+use crate::{Settings, memberships, projects};
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -33,12 +39,27 @@ pub struct ApiState {
     pub origin: String,
     /// Session cookies are `Secure` when `BASE_URL` is https (upstream: `BEHIND_HTTPS_PROXY`).
     pub secure_cookie: bool,
+    pub settings: Arc<Settings>,
 }
 
 impl ApiState {
-    pub fn new(pool: PgPool, base_url: &str) -> anyhow::Result<Self> {
+    pub fn new(pool: PgPool, settings: Settings) -> anyhow::Result<Self> {
+        let base_url = settings.alerts.base_url();
         let url = url::Url::parse(base_url).map_err(|e| anyhow::anyhow!("BASE_URL {base_url:?}: {e}"))?;
-        Ok(Self { pool, origin: url.origin().ascii_serialization(), secure_cookie: url.scheme() == "https" })
+        Ok(Self {
+            pool,
+            origin: url.origin().ascii_serialization(),
+            secure_cookie: url.scheme() == "https",
+            settings: Arc::new(settings),
+        })
+    }
+
+    pub fn memberships(&self) -> memberships::Context {
+        memberships::Context {
+            pool: self.pool.clone(),
+            users: self.settings.users.clone(),
+            alerts: Arc::new(self.settings.alerts.clone()),
+        }
     }
 }
 
@@ -47,8 +68,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/health", get(health))
         .route("/api/v1/auth/login", post(accounts::login))
         .route("/api/v1/auth/logout", post(accounts::logout))
+        .route("/api/v1/auth/reset-password/{token}", post(accounts::reset_password))
         .route("/api/v1/me", get(accounts::me))
-        .route("/api/v1/projects", get(list_projects))
         .route("/api/v1/projects/{project_id}/issues", get(list_issues))
         .route("/api/v1/projects/{project_id}/issues/actions", post(project_issue_actions))
         .route("/api/v1/issues", get(global_issue_list))
@@ -57,11 +78,17 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/issues/{issue_id}/events", get(list_events))
         .route("/api/v1/events/{event_id}", get(get_event))
         .merge(issue_pages::routes())
+        .merge(teams::routes())
+        .merge(project_admin::routes())
+        .merge(members::routes())
         .with_state(state)
 }
 
 pub enum ApiError {
     BadRequest(String),
+    /// A form's errors by field, with Django's messages.
+    Invalid(projects::FieldErrors),
+    Conflict(String),
     Unauthorized,
     CsrfFailed,
     Forbidden(String),
@@ -86,6 +113,10 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         match self {
             Self::BadRequest(detail) => (StatusCode::BAD_REQUEST, Json(json!({ "detail": detail }))).into_response(),
+            Self::Invalid(errors) => {
+                (StatusCode::BAD_REQUEST, Json(json!({ "detail": "invalid", "errors": errors }))).into_response()
+            }
+            Self::Conflict(detail) => (StatusCode::CONFLICT, Json(json!({ "detail": detail }))).into_response(),
             Self::Unauthorized => {
                 (StatusCode::UNAUTHORIZED, Json(json!({ "detail": "authentication required" }))).into_response()
             }
@@ -134,7 +165,7 @@ async fn health(State(state): State<ApiState>) -> ApiResult<serde_json::Value> {
 
 /// Upstream's `user_has_project_membership_access`, which `project/issue/event_membership_required` apply after
 /// looking the object up (so a missing object is a 404 for everyone, and an inaccessible one a 403).
-async fn require_project_access(pool: &PgPool, user: &User, project_id: i64) -> Result<(), ApiError> {
+pub(crate) async fn require_project_access(pool: &PgPool, user: &User, project_id: i64) -> Result<(), ApiError> {
     if user.is_superuser {
         return Ok(());
     }
@@ -149,46 +180,6 @@ async fn require_project_access(pool: &PgPool, user: &User, project_id: i64) -> 
         return Err(ApiError::Forbidden("You don't have permission to access this project".into()));
     }
     Ok(())
-}
-
-/// Upstream's `projects_visible_to_user`: superusers see all; others their projects (accepted or not), their teams'
-/// projects, and joinable/discoverable ones.
-async fn list_projects(
-    State(state): State<ApiState>,
-    CurrentUser { user, .. }: CurrentUser,
-) -> ApiResult<Vec<ProjectListItem>> {
-    // TODO(parity): upstream's mine/teams/other tabs, member counts, join/leave.
-    let projects: Vec<Project> = sqlx::query_as(
-        "SELECT id, team_id, name, slug, sentry_key, digested_event_count, stored_event_count, issue_count,
-                has_releases, retention_max_event_count
-         FROM projects_project p
-         WHERE NOT is_deleted
-           AND ($1 OR visibility < $2
-                OR EXISTS (SELECT 1 FROM projects_projectmembership m WHERE m.project_id = p.id AND m.user_id = $3)
-                OR EXISTS (SELECT 1 FROM teams_teammembership t
-                           WHERE t.team_id = p.team_id AND t.user_id = $3 AND t.accepted))
-         ORDER BY name",
-    )
-    .bind(user.is_superuser)
-    .bind(bugsink_db::PROJECT_VISIBILITY_TEAM_MEMBERS)
-    .bind(user.id)
-    .fetch_all(&state.pool)
-    .await?;
-    let ids: Vec<i64> = projects.iter().map(|p| p.id).collect();
-    let mut sparklines = pages::project_list_sparklines(&state.pool, &ids, Utc::now()).await?;
-    let items = projects
-        .into_iter()
-        .map(|project| ProjectListItem { sparkline: sparklines.remove(&project.id).unwrap_or_default(), project })
-        .collect();
-    Ok(Json(items))
-}
-
-#[derive(Serialize)]
-struct ProjectListItem {
-    #[serde(flatten)]
-    project: Project,
-    /// Events in each of the last 24 hours, the current one last.
-    sparkline: Vec<i32>,
 }
 
 const ISSUE_COLUMNS: &str = "id, project_id, digest_order, first_seen, last_seen, digested_event_count,

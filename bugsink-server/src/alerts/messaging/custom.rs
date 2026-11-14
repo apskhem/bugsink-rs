@@ -132,6 +132,35 @@ pub(super) async fn send_alert(m: &AlertMessage<'_>, issue: &IssueData) -> Resul
     post_json(&m.settings.webhooks, webhook_url, json_dumps(&payload(m, issue))).await
 }
 
+/// `custom_backend_send_test_message`: a made-up issue.
+pub(super) fn test_payload(project_name: &str) -> Value {
+    json!({
+        "id": "497f6eca-6276-4993-bfeb-53cbbbba6f08",
+        "friendly_id": "TEST-1",
+        "project": 1,
+        "digest_order": 1,
+        "first_seen": "2024-01-10T08:15:00Z",
+        "last_seen": "2024-01-15T10:30:00Z",
+        "digested_event_count": 15,
+        "stored_event_count": 15,
+        "calculated_type": "ValueError",
+        "calculated_value": "invalid literal for int()",
+        "transaction": "/api/users/login",
+        "is_resolved": false,
+        "is_resolved_unconditionally": false,
+        "is_resolved_by_next_release": false,
+        "fixed_at": [],
+        "events_at": [],
+        "is_muted": false,
+        "unmute_after": null,
+        "unmute_on_volume_based_conditions": [],
+        "title": "ValueError: invalid literal for int()",
+        "project_name": project_name,
+        "url": "https://bugsink.example.com/issues/497f6eca-6276-4993-bfeb-53cbbbba6f08/",
+        "alert_reason": "TEST",
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

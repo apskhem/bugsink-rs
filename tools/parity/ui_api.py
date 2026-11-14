@@ -83,8 +83,12 @@ if phase == "before":
         csrf = me["csrf_token"]
         status, me2, _ = call("GET", "/api/v1/me", cookie=cookie)
         check(f"{username}: /me", status == 200 and me2 == me, (status, me2))
-        status, projects, _ = call("GET", "/api/v1/projects", cookie=cookie)
-        names = sorted(p["name"] for p in projects) if status == 200 else projects
+        names, status = [], 200
+        for tab in ["mine", "teams", "other"]:  # all the project list's tabs: what upstream shows the user
+            status_tab, page, _ = call("GET", f"/api/v1/projects?tab={tab}", cookie=cookie)
+            status = status_tab if status_tab != 200 else status
+            names += [p["name"] for p in page["items"]] if status_tab == 200 else []
+        names = sorted(names) if status == 200 else status
         check(f"{username}: visible projects {exp['visible']}", names == exp["visible"], names)
         for name, (project_id, allowed) in exp["access"].items():
             status, _, _ = call("GET", f"/api/v1/projects/{project_id}/issues", cookie=cookie)
@@ -227,8 +231,8 @@ if phase == "before":
     status, page, _ = call("GET", f"{project_issues}?state=all", cookie=cookie)
     check("issue list sparklines", status == 200 and all(len(i["sparkline"]) == 24 for i in page["items"])
           and sum(i["sparkline"][-1] for i in page["items"]) == 4, page)
-    status, projects, _ = call("GET", "/api/v1/projects", cookie=cookie)
-    mine_row = next(p for p in projects if p["id"] == mine)
+    status, projects, _ = call("GET", "/api/v1/projects?tab=mine", cookie=cookie)
+    mine_row = next(p for p in projects["items"] if p["id"] == mine)
     check("project list sparkline", mine_row["sparkline"][-1] == 4, mine_row)
 
     history = f"/api/v1/issues/{ids['b']}/history"

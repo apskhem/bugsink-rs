@@ -2,6 +2,7 @@
 //! email quota (`Installation.check_and_inc_email_quota`) and delivery diagnostics (`record_email_attempt`), and
 //! sending over SMTP (`send_rendered_email`, Django's SMTP backend settings).
 
+use crate::quota::{Limit, int_or_none};
 use std::time::{Duration, Instant};
 
 use bugsink_db::PgPool;
@@ -56,15 +57,22 @@ pub struct EmailSettings {
     pub allowed_hosts: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct Limit(pub Option<i64>);
-
-/// `int_or_none`: anything that isn't an integer means "no limit".
-fn int_or_none(s: &str) -> Result<Limit, String> {
-    Ok(Limit(s.trim().parse().ok()))
-}
 
 impl EmailSettings {
+    /// `email_backend_delivers_mail`: whether the UI can count on invitations arriving (else it shows links to pass
+    /// on). Any configured backend but the console and dummy ones; without one, SMTP when `EMAIL_HOST` is set.
+    pub fn backend_delivers_mail(&self) -> bool {
+        match &self.email_backend {
+            Some(backend) => ![
+                "bugsink.email_backends.QuietConsoleEmailBackend",
+                "django.core.mail.backends.console.EmailBackend",
+                "django.core.mail.backends.dummy.EmailBackend",
+            ]
+            .contains(&backend.as_str()),
+            None => self.email_host.is_some(),
+        }
+    }
+
     fn delivers(&self) -> bool {
         match &self.email_backend {
             Some(backend) => backend == "django.core.mail.backends.smtp.EmailBackend",
@@ -126,7 +134,7 @@ pub(super) async fn send_alert_emails(pool: &PgPool, settings: &AlertSettings, i
     .collect();
 
     for to in recipients {
-        if let Err(e) = send_rendered_email(pool, settings, &subject, &to, &ctx).await {
+        if let Err(e) = send_rendered_email(pool, settings, &subject, &to, (HTML_TEMPLATE, TEXT_TEMPLATE), &ctx).await {
             tracing::error!(issue_id = %issue.id, %to, error = %e, "sending alert email failed");
             break;
         }
@@ -171,12 +179,14 @@ fn email_uses_bugsink_domain(email: &str) -> bool {
     email.ends_with("@bugsink.com") || email.ends_with("@bugsink.com>")
 }
 
-/// `send_rendered_email` for one recipient. Refusals and an exceeded quota are logged and count as done.
-async fn send_rendered_email(
+/// `send_rendered_email` for one recipient, with an (html, text) template pair. Refusals and an exceeded quota are
+/// logged and count as done.
+pub(crate) async fn send_rendered_email(
     pool: &PgPool,
     settings: &AlertSettings,
     subject: &str,
     to: &str,
+    (html_template, text_template): (&str, &str),
     ctx: &Context<'_>,
 ) -> anyhow::Result<()> {
     let email = &settings.email;
@@ -204,8 +214,8 @@ async fn send_rendered_email(
     }
     tracing::info!(subject, to, "sending email");
 
-    let html = render(HTML_TEMPLATE, ctx);
-    let text = render(TEXT_TEMPLATE, ctx);
+    let html = render(html_template, ctx);
+    let text = render(text_template, ctx);
 
     let started = Instant::now();
     let result = deliver(email, subject, to, text, html).await;

@@ -1,0 +1,106 @@
+{"n": 0, "as": "bob@example.org", "op": "team_list", "tab": "mine"}
+{"n": 1, "as": "alice@example.org", "op": "team_create", "name": "Alpha", "visibility": 10}
+{"n": 2, "as": "alice@example.org", "op": "team_create", "name": "Alpha", "visibility": 10}
+{"n": 3, "as": "alice@example.org", "op": "team_create", "name": "  ", "visibility": 5}
+{"n": 4, "as": "bob@example.org", "op": "team_list", "tab": "other"}
+{"n": 5, "as": "bob@example.org", "op": "team_join", "team": "Alpha"}
+{"n": 6, "as": "alice@example.org", "op": "team_edit", "team": "Alpha", "name": "Alpha Team", "visibility": 1}
+{"n": 7, "as": "bob@example.org", "op": "team_edit", "team": "Alpha Team", "name": "Mine Now", "visibility": 1}
+{"n": 8, "as": "bob@example.org", "op": "team_join", "team": "Alpha Team"}
+{"n": 9, "as": "bob@example.org", "op": "team_join", "team": "Alpha Team"}
+{"n": 10, "as": "bob@example.org", "op": "team_invite", "team": "Alpha Team", "email": "carol@example.org", "role": 0}
+{"n": 11, "as": "alice@example.org", "op": "team_invite", "team": "Alpha Team", "email": "carol@example.org", "role": 0}
+{"n": 12, "as": "alice@example.org", "op": "team_invite", "team": "Alpha Team", "email": "new.person@example.org", "role": 1}
+{"n": 13, "as": "alice@example.org", "op": "team_invite", "team": "Alpha Team", "email": "not-an-email", "role": 0}
+{"n": 14, "as": "alice@example.org", "op": "team_invite", "team": "Alpha Team", "email": " second.new@example.org ", "role": 7}
+{"n": 15, "as": "alice@example.org", "op": "team_members", "team": "Alpha Team"}
+{"n": 16, "as": "alice@example.org", "op": "team_reinvite", "team": "Alpha Team", "user": "carol@example.org", "modes": ["email"]}
+{"n": 17, "as": "alice@example.org", "op": "team_invite_link", "team": "Alpha Team", "user": "carol@example.org", "modes": ["links"]}
+{"n": 18, "as": "alice@example.org", "op": "team_invite_link", "team": "Alpha Team", "user": "new.person@example.org", "modes": ["links"]}
+{"n": 19, "as": "carol@example.org", "op": "team_list", "tab": "mine"}
+{"n": 20, "as": "carol@example.org", "op": "team_member_settings", "team": "Alpha Team", "user": "carol@example.org", "role": 1, "send_email_alerts": false}
+{"n": 21, "as": "carol@example.org", "op": "team_accept", "team": "Alpha Team"}
+{"n": 22, "as": "carol@example.org", "op": "team_member_settings", "team": "Alpha Team", "user": "carol@example.org", "role": 1, "send_email_alerts": false}
+{"n": 23, "as": "alice@example.org", "op": "team_member_settings", "team": "Alpha Team", "user": "bob@example.org", "role": 1}
+{"n": 24, "as": "admin@example.org", "op": "team_member_settings", "team": "Alpha Team", "user": "bob@example.org", "role": 1}
+{"n": 25, "as": "alice@example.org", "op": "team_member_settings", "team": "Alpha Team", "user": "alice@example.org", "role": 1, "send_email_alerts": null}
+{"n": 26, "as": "alice@example.org", "op": "team_leave", "team": "Alpha Team"}
+{"n": 27, "as": "bob@example.org", "op": "team_leave", "team": "Alpha Team"}
+{"n": 28, "as": "bob@example.org", "op": "team_join", "team": "Alpha Team"}
+{"n": 29, "as": "new.person@example.org", "op": "accept_new_user", "group": "team", "team": "Alpha Team", "token_for": "new.person@example.org"}
+{"n": 30, "as": "new.person@example.org", "op": "reset_password", "token_for": "new.person@example.org", "password": "password"}
+{"n": 31, "as": "new.person@example.org", "op": "reset_password", "token_for": "new.person@example.org", "password": "new.person1"}
+{"n": 32, "as": "new.person@example.org", "op": "reset_password", "token_for": "new.person@example.org", "password": "lovelace-quantum-77"}
+{"n": 33, "as": "new.person@example.org", "op": "team_accept", "team": "Alpha Team"}
+{"n": 34, "as": "new.person@example.org", "op": "team_list", "tab": "mine"}
+{"n": 35, "as": "carol@example.org", "op": "project_create", "team": "Alpha Team", "name": "Web App", "visibility": 99, "retention_max_event_count": 5000, "grouping_mechanism": "bugsink-v2"}
+{"n": 36, "as": "alice@example.org", "op": "project_create", "team": "Alpha Team", "name": "Web App", "visibility": 99, "retention_max_event_count": 5000, "grouping_mechanism": "bugsink-v2"}
+{"n": 37, "as": "alice@example.org", "op": "project_create", "team": "Alpha Team", "name": "Web App", "visibility": 99, "retention_max_event_count": 5000, "grouping_mechanism": "bugsink-v2"}
+{"n": 38, "as": "alice@example.org", "op": "project_create", "team": "Alpha Team", "name": "web app!!", "visibility": 99, "retention_max_event_count": 5000, "grouping_mechanism": "bugsink-v2"}
+{"n": 39, "as": "alice@example.org", "op": "project_create", "team": "Alpha Team", "name": "H\u00e9llo W\u00f6rld", "visibility": 1, "retention_max_event_count": -1, "grouping_mechanism": "nope"}
+{"n": 40, "as": "alice@example.org", "op": "project_create", "team": "Alpha Team", "name": "H\u00e9llo W\u00f6rld", "visibility": 1, "retention_max_event_count": 100, "grouping_mechanism": "bugsink-v1"}
+{"n": 41, "as": "admin@example.org", "op": "team_create", "name": "Beta", "visibility": 99}
+{"n": 42, "as": "alice@example.org", "op": "project_create", "team": "Beta", "name": "Elsewhere", "visibility": 99, "retention_max_event_count": 5000, "grouping_mechanism": "bugsink-v2"}
+{"n": 43, "as": "admin@example.org", "op": "project_create", "team": "Beta", "name": "Elsewhere", "visibility": 99, "retention_max_event_count": 5000, "grouping_mechanism": "bugsink-v2"}
+{"n": 44, "as": "bob@example.org", "op": "project_list", "tab": "teams"}
+{"n": 45, "as": "bob@example.org", "op": "project_join", "project": "web-app"}
+{"n": 46, "as": "bob@example.org", "op": "project_join", "project": "web-app"}
+{"n": 47, "as": "bob@example.org", "op": "project_join", "project": "elsewhere"}
+{"n": 48, "as": "carol@example.org", "op": "project_join", "project": "web-app-0"}
+{"n": 49, "as": "alice@example.org", "op": "project_invite", "project": "web-app", "email": "bob@example.org", "role": 0}
+{"n": 50, "as": "alice@example.org", "op": "project_invite", "project": "web-app", "email": "second.new@example.org", "role": 0}
+{"n": 51, "as": "alice@example.org", "op": "project_invite", "project": "web-app", "email": "carol@example.org", "role": 1}
+{"n": 52, "as": "alice@example.org", "op": "project_members", "project": "web-app"}
+{"n": 53, "as": "alice@example.org", "op": "project_member_settings", "project": "web-app", "user": "bob@example.org", "role": 1}
+{"n": 54, "as": "bob@example.org", "op": "project_member_settings", "project": "web-app", "user": "bob@example.org", "role": 0, "send_email_alerts": true}
+{"n": 55, "as": "bob@example.org", "op": "project_remove", "project": "web-app-0", "user": "carol@example.org"}
+{"n": 56, "as": "carol@example.org", "op": "project_decline", "project": "web-app"}
+{"n": 57, "as": "carol@example.org", "op": "project_accept", "project": "web-app"}
+{"n": 58, "as": "second.new@example.org", "op": "accept_new_user", "group": "project", "project": "web-app", "token_for": "second.new@example.org"}
+{"n": 59, "as": "second.new@example.org", "op": "reset_password", "token_for": "second.new@example.org", "password": "Kx9!plum-orchard"}
+{"n": 60, "as": "second.new@example.org", "op": "project_accept", "project": "web-app"}
+{"n": 61, "as": "second.new@example.org", "op": "project_accept", "project": "web-app"}
+{"n": 62, "as": "second.new@example.org", "op": "project_member_settings", "project": "web-app", "user": "second.new@example.org", "role": 1, "send_email_alerts": false}
+{"n": 63, "as": "bob@example.org", "op": "service_add", "project": "web-app", "display_name": "Slack", "kind": "slack", "config": {"webhook_url": "http://@CAPTURE@/slack"}}
+{"n": 64, "as": "alice@example.org", "op": "service_add", "project": "web-app", "display_name": "Slack", "kind": "slack", "config": {"webhook_url": "http://@CAPTURE@/slack"}}
+{"n": 65, "as": "alice@example.org", "op": "service_add", "project": "web-app", "display_name": "  ", "kind": "discord", "config": {"webhook_url": "not a url"}}
+{"n": 66, "as": "alice@example.org", "op": "service_add", "project": "web-app", "display_name": "Discord", "kind": "discord", "config": {"webhook_url": "//@CAPTURE@/discord"}}
+{"n": 67, "as": "alice@example.org", "op": "service_add", "project": "web-app", "display_name": "Nowhere", "kind": "google_chat", "config": {"webhook_url": "http://no-such-host.invalid/x"}}
+{"n": 68, "as": "alice@example.org", "op": "service_add", "project": "web-app", "display_name": "Teams", "kind": "msteams", "config": {"webhook_url": "http://@CAPTURE@/msteams?xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}}
+{"n": 69, "as": "alice@example.org", "op": "service_add", "project": "web-app", "display_name": "Long", "kind": "slack", "config": {"webhook_url": "http://@CAPTURE@/slack?xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}}
+{"n": 70, "as": "alice@example.org", "op": "service_add", "project": "web-app", "display_name": "Mattermost", "kind": "mattermost", "config": {"webhook_url": "http://@CAPTURE@/mattermost", "channel": " town-square "}}
+{"n": 71, "as": "alice@example.org", "op": "service_add", "project": "web-app", "display_name": "Google", "kind": "google_chat", "config": {"webhook_url": "http://@CAPTURE@/google_chat"}}
+{"n": 72, "as": "alice@example.org", "op": "service_add", "project": "web-app", "display_name": "Custom", "kind": "custom", "config": {"webhook_url": "http://@CAPTURE@/fail/custom"}}
+{"n": 73, "as": "alice@example.org", "op": "service_add", "project": "web-app", "display_name": "Telegram", "kind": "telegram", "config": {"bot_token": "123:abc", "chat_id": "@channel", "message_thread_id": "5"}}
+{"n": 74, "as": "alice@example.org", "op": "service_add", "project": "web-app", "display_name": "Telegram", "kind": "telegram", "config": {"bot_token": "", "chat_id": "chan", "message_thread_id": "0"}}
+{"n": 75, "as": "alice@example.org", "op": "service_add", "project": "web-app", "display_name": "Telegram", "kind": "telegram", "config": {"bot_token": "123:abc", "chat_id": "-100123", "message_thread_id": "7"}}
+{"n": 76, "as": "alice@example.org", "op": "services", "project": "web-app"}
+{"n": 77, "as": "alice@example.org", "op": "service_edit", "project": "web-app", "service": "Discord", "display_name": "Discord <ops> & *dev*", "config": {"webhook_url": "http://@CAPTURE@/discord"}}
+{"n": 78, "as": "alice@example.org", "op": "service_edit", "project": "web-app", "service": "Mattermost", "display_name": "", "config": {"webhook_url": "gopher://@CAPTURE@/x", "channel": "x"}}
+{"n": 79, "as": "bob@example.org", "op": "service_test", "project": "web-app", "service": "Slack"}
+{"n": 80, "as": "alice@example.org", "op": "service_test", "project": "web-app", "service": "Slack"}
+{"n": 81, "as": "alice@example.org", "op": "service_test", "project": "web-app", "service": "Discord <ops> & *dev*"}
+{"n": 82, "as": "alice@example.org", "op": "service_test", "project": "web-app", "service": "Teams"}
+{"n": 83, "as": "alice@example.org", "op": "service_test", "project": "web-app", "service": "Mattermost"}
+{"n": 84, "as": "alice@example.org", "op": "service_test", "project": "web-app", "service": "Google"}
+{"n": 85, "as": "alice@example.org", "op": "service_test", "project": "web-app", "service": "Custom"}
+{"n": 86, "as": "alice@example.org", "op": "service_remove", "project": "web-app", "service": "Google"}
+{"n": 87, "as": "alice@example.org", "op": "services", "project": "web-app"}
+{"n": 88, "as": "bob@example.org", "op": "project_list", "tab": "mine"}
+{"n": 89, "as": "carol@example.org", "op": "project_list", "tab": "other"}
+{"n": 90, "as": "bob@example.org", "op": "sdk_setup", "project": "web-app"}
+{"n": 91, "as": "carol@example.org", "op": "sdk_setup", "project": "elsewhere"}
+{"n": 92, "as": "alice@example.org", "op": "project_edit", "project": "web-app", "name": "Web Application", "visibility": 10, "retention_max_event_count": 100, "grouping_mechanism": "bugsink-v1"}
+{"n": 93, "as": "bob@example.org", "op": "project_edit", "project": "elsewhere", "name": "Mine", "visibility": 99, "retention_max_event_count": 5000, "grouping_mechanism": "bugsink-v2"}
+{"n": 94, "as": "alice@example.org", "op": "project_edit", "project": "web-app-0", "name": "Web Application", "visibility": 99, "retention_max_event_count": 5000, "grouping_mechanism": "bugsink-v2"}
+{"n": 95, "as": "alice@example.org", "op": "project_leave", "project": "web-app"}
+{"n": 96, "as": "alice@example.org", "op": "project_delete", "project": "web-app-0"}
+{"n": 97, "as": "alice@example.org", "op": "project_edit", "project": "web-app-0", "name": "Gone", "visibility": 99, "retention_max_event_count": 5000, "grouping_mechanism": "bugsink-v2"}
+{"n": 98, "as": "alice@example.org", "op": "team_delete", "team": "Alpha Team"}
+{"n": 99, "as": "admin@example.org", "op": "project_delete", "project": "elsewhere"}
+{"n": 100, "as": "admin@example.org", "op": "team_delete", "team": "Beta"}
+{"n": 101, "as": "admin@example.org", "op": "team_create", "name": "Gamma", "visibility": 99}
+{"n": 102, "as": "admin@example.org", "op": "team_delete", "team": "Gamma"}
+{"n": 103, "as": "carol@example.org", "op": "team_list", "tab": "other"}
+{"n": 104, "as": "alice@example.org", "op": "team_remove", "team": "Alpha Team", "user": "bob@example.org"}
+{"n": 105, "as": "alice@example.org", "op": "team_remove", "team": "Alpha Team", "user": "alice@example.org"}
