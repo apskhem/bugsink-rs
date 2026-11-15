@@ -382,8 +382,9 @@ pub async fn counts(pool: &PgPool) -> sqlx::Result<Value> {
 #[derive(Debug, Serialize)]
 pub struct SystemWarning {
     pub message: String,
-    /// More about it.
+    /// More about it: the end of the message, `link_text`, links there.
     pub link: Option<&'static str>,
+    pub link_text: Option<&'static str>,
     /// Superusers can silence this one (`POST /api/v1/system-warnings/email/silence`).
     pub silenceable: bool,
 }
@@ -415,6 +416,7 @@ pub async fn system_warnings(
             message: "Email is not set up, emails won't be sent. To get the most out of Bugsink, please set up email."
                 .into(),
             link: Some("https://www.bugsink.com/docs/settings/#email"),
+            link_text: Some("set up email"),
             silenceable: user.is_superuser,
         });
     }
@@ -432,6 +434,7 @@ pub async fn system_warnings(
                      the next hour."
                 ),
                 link: None,
+                link_text: None,
                 silenceable: false,
             });
         }
@@ -445,6 +448,7 @@ pub async fn system_warnings(
                      the 1st of next month."
                 ),
                 link: None,
+                link_text: None,
                 silenceable: false,
             });
         }
@@ -473,6 +477,7 @@ pub async fn system_warnings(
                 recent.len()
             ),
             link: None,
+            link_text: None,
             silenceable: false,
         });
     }
@@ -488,6 +493,7 @@ pub async fn system_warnings(
                 "Event ingestion stopped until {until}. Reason: installation quota ({gte} events per {per}) exceeded."
             ),
             link: None,
+            link_text: None,
             silenceable: false,
         });
     }
@@ -505,6 +511,7 @@ pub async fn system_warnings(
                  running, misconfigured or blocked."
             ),
             link: None,
+            link_text: None,
             silenceable: false,
         });
     }

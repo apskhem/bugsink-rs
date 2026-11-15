@@ -95,6 +95,7 @@ function EventContent({ issue, tab, q, page }: ContentProps) {
         <EventDetails
           display={display}
           data={event.data}
+          tags={page.tags}
           projectId={issue.project_id}
           q={q}
           eventLine={eventLine}

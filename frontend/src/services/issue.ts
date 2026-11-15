@@ -154,7 +154,9 @@ export type EventDisplay = z.infer<typeof EventDisplay>;
 export const EventPage = z.object({
   event: Event,
   nav: Nav,
-  display: EventDisplay.nullable()
+  display: EventDisplay.nullable(),
+  /** The tags stored for the event, by key. */
+  tags: z.array(z.tuple([z.string(), z.string()]))
 });
 export type EventPage = z.infer<typeof EventPage>;
 

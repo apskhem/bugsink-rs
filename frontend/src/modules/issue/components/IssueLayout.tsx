@@ -136,7 +136,17 @@ function IssuePage({ issue, tab, version, onChanged, event, requestRepr, childre
                 <span className="font-bold">{dateTime(event.ingested_at)}</span>
               </div>
             )}
-            <div className="ml-auto pr-4 font-bold text-slate-500 dark:text-slate-300"></div>
+            <div className="ml-auto pr-4 font-bold text-slate-500 dark:text-slate-300">
+              {event && (
+                <>
+                  <a href={`/events/event/${event.id}/download/`}>Download</a>
+                  {" | "}
+                  <a href={`/events/event/${event.id}/raw/`}>JSON</a>
+                  {" | "}
+                  <a href={`/events/event/${event.id}/md/`}>Markdown</a>
+                </>
+              )}
+            </div>
           </div>
         </div>
 

@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Link } from "react-router";
 
 import { Linebreaks, TimestampWithMillis } from "modules/issue/components/Text";
-import { asRecord, isRecord, pyStr, truthy } from "modules/issue/utils/python";
+import { asRecord, isRecord, truthy } from "modules/issue/utils/python";
 import { tagDrilldownHref } from "modules/issue/utils/tags";
 import type { EventDisplay } from "services/issue";
 
@@ -55,31 +55,12 @@ const items = (value: unknown): [string, unknown][] => (isRecord(value) ? Object
 /** Key info's timestamps go through `timestamp_with_millis` upstream. */
 const TIMESTAMP_KEYS = ["timestamp", "ingested at", "digested at"];
 
-/**
- * The event's tags. Upstream lists the tags it stored for the event (`event.get_tags`, by key); the API doesn't give
- * those, so this shows the SDK's `tags` (a dict, or a list of pairs).
- */
-function eventTags(data: unknown): [string, string][] {
-  const tags = asRecord(data)?.["tags"];
-  const pairs: [string, string][] = [];
-  if (isRecord(tags)) {
-    for (const [key, value] of Object.entries(tags)) {
-      pairs.push([key, pyStr(value)]);
-    }
-  } else if (Array.isArray(tags)) {
-    for (const pair of tags) {
-      if (Array.isArray(pair) && typeof pair[0] === "string") {
-        pairs.push([pair[0], pyStr(pair[1])]);
-      }
-    }
-  }
-  return pairs.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-}
-
 type Props = {
   display: EventDisplay;
   /** The event's payload. */
   data: unknown;
+  /** The tags stored for the event, by key. */
+  tags: [string, string][];
   projectId: number;
   q: string;
   eventLine: ReactNode;
@@ -88,9 +69,8 @@ type Props = {
 };
 
 /** Upstream's `issues/event_details.html`. */
-export default function EventDetails({ display, data, projectId, q, eventLine, nav, sparkline }: Props) {
+export default function EventDetails({ display, data, tags, projectId, q, eventLine, nav, sparkline }: Props) {
   const parsed = asRecord(data) ?? {};
-  const tags = eventTags(data);
   const user = parsed["user"];
   const request = parsed["request"];
   const requestRecord = asRecord(request) ?? {};

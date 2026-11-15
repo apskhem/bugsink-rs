@@ -96,11 +96,10 @@ as a client-side React app (`frontend/`) on the UI API.
 
 In order of importance for production use (code-level gaps also have a `TODO(parity)` where they belong):
 
-1. **Frontend**: every page is ported (see `frontend/README.md`), checked against the API's responses but not yet
-   compared with upstream's pages side by side. Left out: the event download/raw/Markdown links (no backend routes),
-   project warnings and sourcemap ids on the issue pages, and translations (the language preference is stored only).
-2. **The UI's API** is complete but for the issue's Markdown export and the system warnings from upstream's
-   phone-home ("remote messages").
+1. **Frontend**: every page is ported (see `frontend/README.md`), checked against the API's responses and, in a
+   headless browser, side by side with upstream's pages on the same database. Left out: project warnings and
+   sourcemap ids on the issue pages, and translations (the language preference is stored only).
+2. **The UI's API** is complete but for the system warnings from upstream's phone-home ("remote messages").
 3. **Background jobs** besides digest, alerts, test messages, invitation, confirmation and password reset emails,
    and the deletion of issues and projects: phone-home.
 

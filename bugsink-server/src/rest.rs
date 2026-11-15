@@ -8,7 +8,7 @@
 mod events;
 mod fields;
 mod issues;
-mod markdown;
+pub(crate) mod markdown;
 mod pagination;
 mod projects;
 mod pyjson;

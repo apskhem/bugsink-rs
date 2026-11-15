@@ -30,6 +30,8 @@ export type SiteSettings = z.infer<typeof SiteSettings>;
 export const SystemWarning = z.object({
   message: z.string(),
   link: z.string().nullable(),
+  /** The end of the message that links to `link`. */
+  link_text: z.string().nullable(),
   silenceable: z.boolean()
 });
 export type SystemWarning = z.infer<typeof SystemWarning>;

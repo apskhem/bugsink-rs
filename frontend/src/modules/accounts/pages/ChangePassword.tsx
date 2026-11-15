@@ -88,6 +88,7 @@ export default function ChangePassword() {
           <InputField
             label="New password confirmation"
             errors={errors["new_password2"]}
+            helpText="Enter the same password as before, for verification."
             type="password"
             name="new_password2"
             id="id_new_password2"

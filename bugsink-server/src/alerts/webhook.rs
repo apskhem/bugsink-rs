@@ -31,6 +31,15 @@ pub enum OutboundMode {
     AllowlistOnly,
 }
 
+impl OutboundMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::AllowlistOnly => "allowlist_only",
+        }
+    }
+}
+
 fn parse_mode(s: &str) -> Result<OutboundMode, String> {
     match s.to_lowercase().as_str() {
         "open" => Ok(OutboundMode::Open),
@@ -41,6 +50,8 @@ fn parse_mode(s: &str) -> Result<OutboundMode, String> {
 
 #[derive(Clone, Debug, Default)]
 pub struct Destinations {
+    /// As configured (the settings page shows them).
+    pub entries: Vec<String>,
     hosts: HashSet<String>,
     networks: Vec<Network>,
 }
@@ -52,6 +63,7 @@ fn parse_destinations(s: &str) -> Result<Destinations, String> {
         if entry.contains("://") {
             return Err(format!("invalid entry: {entry} (use hostname/IP/CIDR, not full URLs)"));
         }
+        d.entries.push(entry.clone());
         match Network::parse(&entry) {
             Some(n) => d.networks.push(n),
             None if entry.contains('/') => return Err(format!("invalid entry: {entry}")),

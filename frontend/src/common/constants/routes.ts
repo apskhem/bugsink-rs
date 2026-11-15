@@ -3,7 +3,9 @@
  */
 export const routes = {
   home: () => "/",
-  login: (next?: string) => (next ? `/accounts/login/?next=${encodeURIComponent(next)}` : "/accounts/login/"),
+  // Django's `redirect_to_login` leaves the slashes
+  login: (next?: string) =>
+    next ? `/accounts/login/?next=${encodeURIComponent(next).replace(/%2F/g, "/")}` : "/accounts/login/",
   logout: () => "/accounts/logout/",
   signup: () => "/accounts/signup/",
   resendConfirmation: () => "/accounts/resend-confirmation/",

@@ -51,7 +51,8 @@ each page needs; ✅ means it exists already.
 | **Issue list** (open/resolved/muted/all, search, bulk actions) | `issues/issue_list.html` | ✅ `GET /projects/{id}/issues?state=&sort=&q=`, bulk ✅ `POST /projects/{id}/issues/actions` |
 | Global issue list | `issues/issue_list.html` | ✅ `GET /issues?state=&sort=`, bulk ✅ `POST /issues/actions` |
 | Issue header | `issues/base.html` | ✅ `GET /issues/{id}` (title, friendly id, releases, mute conditions), tag summary ✅ `GET /issues/{id}/tags` |
-| **Issue: event details** | `issues/event_details.html`, `_event_nav.html` | ✅ `GET /issues/{id}/events/{first,last,<digest_order>,<event id>}`, `/events/<digest_order>/{prev,next}` (all `?q=`) |
+| **Issue: event details** | `issues/event_details.html`, `_event_nav.html` | ✅ `GET /issues/{id}/events/{first,last,<digest_order>,<event id>}`, `/events/<digest_order>/{prev,next}` (all `?q=`); the event's stored `tags` |
+| Event download, JSON, Markdown (footer links) | `events/views.py` | ✅ served by the backend at upstream's `/events/event/{id}/{download,raw,md}/` (not under `/api/v1`) |
 | **Issue: stacktrace** | `issues/stacktrace.html`, `_stacktrace_frames.html` | ✅ event page `display.stacktrace` (applying uploaded sourcemaps TODO) |
 | Issue: breadcrumbs | `issues/breadcrumbs.html` | ✅ event page `display.breadcrumbs` |
 | Issue: event list | `issues/event_list.html` | ✅ `GET /issues/{id}/events?q=` |

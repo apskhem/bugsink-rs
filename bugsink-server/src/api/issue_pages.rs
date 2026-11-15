@@ -1,7 +1,7 @@
 //! The issue pages: header, tags, groupings, history and comments, an event with navigation, hourly counts.
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use axum::{Json, Router};
 use axum::routing::{get, patch, post};
@@ -29,6 +29,9 @@ pub fn routes() -> Router<ApiState> {
         .route("/api/v1/issues/{issue_id}/counts", get(issue_counts))
         .route("/api/v1/issues/{issue_id}/events/{selector}", get(issue_event))
         .route("/api/v1/issues/{issue_id}/events/{digest_order}/{nav}", get(issue_event_nav))
+        .route("/events/event/{event_id}/raw/", get(|s, u, uri, p| event_file(s, u, uri, p, EventFile::Json)))
+        .route("/events/event/{event_id}/download/", get(|s, u, uri, p| event_file(s, u, uri, p, EventFile::Download)))
+        .route("/events/event/{event_id}/md/", get(|s, u, uri, p| event_file(s, u, uri, p, EventFile::Markdown)))
 }
 
 #[derive(Serialize)]
@@ -174,6 +177,8 @@ struct EventPage {
     nav: Nav,
     /// The event as upstream's event pages show it (`crate::event_display`); null when the payload isn't readable.
     display: Option<EventDisplay>,
+    /// The tags stored for the event, by key (`Event.get_tags`): the details tab's.
+    tags: Vec<(String, String)>,
 }
 
 async fn event_by_digest_order(
@@ -200,7 +205,15 @@ async fn event_page(
     let digest_order = event.summary.digest_order;
     let nav = pages::nav(&state.pool, issue.id, issue.stored_event_count, search, !q.is_empty(), digest_order).await?;
     let display = event_display::for_event(&state.pool, event.summary.id).await?;
-    Ok(Json(EventPage { event, nav, display }))
+    let tags = sqlx::query_as(
+        "SELECT k.key, v.value FROM tags_eventtag et
+         JOIN tags_tagvalue v ON v.id = et.value_id JOIN tags_tagkey k ON k.id = v.key_id
+         WHERE et.event_id = $1 ORDER BY k.key",
+    )
+    .bind(event.summary.id)
+    .fetch_all(&state.pool)
+    .await?;
+    Ok(Json(EventPage { event, nav, display, tags }))
 }
 
 /// `/events/first` and `/events/last` (within the search), `/events/<digest_order>`, `/events/<id>` (our id, or the
@@ -286,4 +299,63 @@ async fn issue_counts(
     };
     let (hours, matching) = pages::hourly_counts(&state.pool, issue_id, since, until, search.as_ref()).await?;
     Ok(Json(Counts { since, until, hours, matching }))
+}
+
+enum EventFile {
+    Json,
+    Download,
+    Markdown,
+}
+
+/// Upstream's `/events/event/<id>/raw/` and `download/` (the payload as stored) and `md/` (`render_stacktrace_md`),
+/// linked from the event pages: plain responses for the browser, so logged out it goes to the login page.
+async fn event_file(
+    State(state): State<ApiState>,
+    current: Result<CurrentUser, ApiError>,
+    uri: Uri,
+    Path(event_id): Path<String>,
+    kind: EventFile,
+) -> Result<Response, ApiError> {
+    let user = match current {
+        Ok(CurrentUser { user, .. }) => user,
+        Err(ApiError::Unauthorized) => {
+            let next = url::form_urlencoded::byte_serialize(uri.path().as_bytes()).collect::<String>();
+            let location = format!("/accounts/login/?next={}", next.replace("%2F", "/"));
+            return Ok((StatusCode::FOUND, [(header::LOCATION, location)]).into_response());
+        }
+        Err(e) => return Err(e),
+    };
+    let event_id = Uuid::try_parse(&event_id).map_err(|_| ApiError::NotFound)?;
+    type Row = (i64, Option<String>, String, String, String);
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT project_id, CASE WHEN storage_backend IS NULL THEN data END, platform, calculated_type,
+                calculated_value
+         FROM events_event WHERE id = $1",
+    )
+    .bind(event_id)
+    .fetch_optional(&state.pool)
+    .await?;
+    let (project_id, data, platform, calculated_type, calculated_value) = row.ok_or(ApiError::NotFound)?;
+    super::require_project_access(&state.pool, &user, project_id).await?;
+    let data = data.ok_or_else(|| ApiError::internal("the event's payload is in upstream's file storage"))?;
+    let filename = event_id.simple();
+    Ok(match kind {
+        EventFile::Json | EventFile::Download => {
+            let disposition = if matches!(kind, EventFile::Download) { "attachment" } else { "inline" };
+            (
+                [
+                    (header::CONTENT_TYPE, "application/json".to_owned()),
+                    (header::CONTENT_DISPOSITION, format!("{disposition}; filename=\"{filename}.json\"")),
+                ],
+                data,
+            )
+                .into_response()
+        }
+        EventFile::Markdown => {
+            let data = serde_json::from_str(&data).unwrap_or_default();
+            let title = pages::title(&calculated_type, &calculated_value);
+            let text = crate::rest::markdown::render(&data, &platform, &title);
+            ([(header::CONTENT_TYPE, "text/markdown; charset=utf-8")], text).into_response()
+        }
+    })
 }
