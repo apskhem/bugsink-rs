@@ -31,6 +31,7 @@ lettre.workspace = true
 mimalloc.workspace = true
 rand.workspace = true
 regex.workspace = true
+regex-syntax.workspace = true
 reqwest.workspace = true
 semver.workspace = true
 serde.workspace = true

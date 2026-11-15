@@ -3,6 +3,13 @@
 Versions follow the upstream Bugsink line that bugsink-rs is a drop-in for: `MAJOR.MINOR` is upstream's, the patch
 number counts bugsink-rs's own releases (see "Versions" in the README).
 
+## Unreleased
+
+- Much less memory: deriving browser/OS/device from User-Agent headers took ~175 MB, plus ~75 MB per thread that did
+  it, for the ~1,300 compiled regexes of upstream's parser data. A regex is now only compiled for user agents that
+  contain the text it requires; common browsers need a few dozen, and parsing is ~4x faster. The results are
+  unchanged.
+
 ## 2.6.1 (2026-11-15)
 
 - A database that upstream installed before it squashed its early migrations, then upgraded to 2.6.3, is no longer

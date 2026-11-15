@@ -3,15 +3,27 @@
 //! from the upstream 2.6.3 image). Python's `re` semantics that the legacy parser depends on are reproduced:
 //! `match.lastindex`, `$N` replacement, and the replacement-template escapes of `re.sub`.
 
-use std::collections::HashMap;
+use std::collections::{
+  BTreeSet,
+  HashMap,
+};
 use std::sync::{
   LazyLock,
   Mutex,
+  OnceLock,
 };
 
 use regex::{
   Regex,
   RegexBuilder,
+};
+use regex_syntax::hir::{
+  Class,
+  ClassUnicode,
+  ClassUnicodeRange,
+  Hir,
+  HirKind,
+  Literal,
 };
 use serde::Deserialize;
 use serde_json::{
@@ -69,9 +81,15 @@ struct DeviceRule {
   model_replacement: Option<String>,
 }
 
-/// A compiled pattern, with what's needed to compute Python's `match.lastindex`.
+/// A pattern, with what's needed to compute Python's `match.lastindex`.
+///
+/// Compiled only once a user agent passes its prefilter: uap-core's bounded repetitions (`[^;]{0,200}`) are unrolled by
+/// the `regex` crate, so all ~1,300 compiled take ~175 MB, plus a search cache per regex per thread that uses it.
 struct Pattern {
-  regex: Regex,
+  source: String,
+  case_insensitive: bool,
+  prefilter: Prefilter,
+  regex: OnceLock<Regex>,
   /// Capture group numbers ordered by the position of their closing parenthesis in the pattern.
   close_order: Vec<usize>,
 }
@@ -105,15 +123,200 @@ static PARSERS: LazyLock<Parsers> = LazyLock::new(|| {
 
 impl Pattern {
   fn new(pattern: &str, case_insensitive: bool) -> Self {
-    let regex = RegexBuilder::new(pattern)
-      .case_insensitive(case_insensitive)
-      .build()
-      .unwrap_or_else(|e| panic!("ua regex {pattern:?}: {e}"));
     Self {
-      regex,
+      source: pattern.to_string(),
+      case_insensitive,
+      prefilter: Prefilter::new(pattern, case_insensitive),
+      regex: OnceLock::new(),
       close_order: close_order(pattern),
     }
   }
+
+  fn regex(&self) -> &Regex {
+    self.regex.get_or_init(|| {
+      RegexBuilder::new(&self.source)
+        .case_insensitive(self.case_insensitive)
+        .build()
+        .unwrap_or_else(|e| panic!("ua regex {:?}: {e}", self.source))
+    })
+  }
+}
+
+/// A condition on the folded haystack (see [`fold`]) that every match of a pattern implies: the strings it must
+/// contain. It only rules out patterns that can't match, so which pattern matches first is unchanged.
+#[derive(Debug, PartialEq)]
+enum Prefilter {
+  Any,
+  Contains(String),
+  All(Vec<Prefilter>),
+  AnyOf(Vec<Prefilter>),
+}
+
+/// Exact sets larger than this become a [`Prefilter`]; classes with more distinct folded characters, [`Prefilter::Any`].
+const MAX_EXACT: usize = 32;
+const MAX_CLASS: usize = 8;
+
+/// What a match of a sub-pattern implies: one of a few exact (folded) strings, or a weaker condition.
+enum Implied {
+  Exact(BTreeSet<String>),
+  Condition(Prefilter),
+}
+
+impl Prefilter {
+  fn new(pattern: &str, case_insensitive: bool) -> Self {
+    let hir = regex_syntax::ParserBuilder::new()
+      .case_insensitive(case_insensitive)
+      .build()
+      .parse(pattern)
+      .unwrap_or_else(|e| panic!("ua regex {pattern:?}: {e}"));
+    Implied::of(&hir).into_prefilter()
+  }
+
+  fn holds(&self, folded: &str) -> bool {
+    match self {
+      Self::Any => true,
+      Self::Contains(s) => folded.contains(s.as_str()),
+      Self::All(all) => all.iter().all(|p| p.holds(folded)),
+      Self::AnyOf(any) => any.iter().any(|p| p.holds(folded)),
+    }
+  }
+
+  fn all(all: Vec<Self>) -> Self {
+    let mut all: Vec<Self> = all.into_iter().filter(|p| *p != Self::Any).collect();
+    match all.len() {
+      0 => Self::Any,
+      1 => all.pop().expect("one"),
+      _ => Self::All(all),
+    }
+  }
+
+  /// No alternatives (an exact set from an empty class) can't hold, as the pattern can't match.
+  fn any_of(mut any: Vec<Self>) -> Self {
+    if any.contains(&Self::Any) {
+      Self::Any
+    } else if any.len() == 1 {
+      any.pop().expect("one")
+    } else {
+      Self::AnyOf(any)
+    }
+  }
+}
+
+impl Implied {
+  fn of(hir: &Hir) -> Self {
+    match hir.kind() {
+      HirKind::Empty | HirKind::Look(_) => Self::Exact(BTreeSet::from([String::new()])),
+      HirKind::Literal(Literal(bytes)) => {
+        match std::str::from_utf8(bytes) {
+          Ok(s) => Self::Exact(BTreeSet::from([s.chars().map(fold).collect()])),
+          Err(_) => Self::Condition(Prefilter::Any),
+        }
+      }
+      HirKind::Class(Class::Unicode(class)) => {
+        let size: u32 = class.iter().map(|r| r.len() as u32).sum();
+        let chars: BTreeSet<char> = class
+          .iter()
+          .flat_map(|r| r.start()..=r.end())
+          .take(64)
+          .map(fold)
+          .collect();
+        if size <= 64 && chars.len() <= MAX_CLASS {
+          Self::Exact(chars.into_iter().map(String::from).collect())
+        } else {
+          Self::Condition(Prefilter::Any)
+        }
+      }
+      HirKind::Class(Class::Bytes(_)) => Self::Condition(Prefilter::Any),
+      HirKind::Repetition(rep) => {
+        match (rep.min, rep.max) {
+          (1, Some(1)) => Self::of(&rep.sub),
+          (0, Some(1)) => {
+            match Self::of(&rep.sub) {
+              Self::Exact(mut exact) if exact.len() < MAX_EXACT => {
+                exact.insert(String::new());
+                Self::Exact(exact)
+              }
+              _ => Self::Condition(Prefilter::Any),
+            }
+          }
+          (0, _) => Self::Condition(Prefilter::Any),
+          _ => Self::Condition(Self::of(&rep.sub).into_prefilter()),
+        }
+      }
+      HirKind::Capture(capture) => Self::of(&capture.sub),
+      HirKind::Concat(subs) => {
+        // Runs of exact parts are joined (cross product) while small: longer strings rule out more.
+        let mut conditions = Vec::new();
+        let mut run = BTreeSet::from([String::new()]);
+        for sub in subs {
+          match Self::of(sub) {
+            Self::Exact(exact) if run.len() * exact.len() <= MAX_EXACT => {
+              run = run
+                .iter()
+                .flat_map(|a| exact.iter().map(move |b| format!("{a}{b}")))
+                .collect();
+            }
+            Self::Exact(exact) => conditions.push(Self::Exact(std::mem::replace(&mut run, exact)).into_prefilter()),
+            Self::Condition(condition) => {
+              conditions
+                .push(Self::Exact(std::mem::replace(&mut run, BTreeSet::from([String::new()]))).into_prefilter());
+              conditions.push(condition);
+            }
+          }
+        }
+        if conditions.is_empty() {
+          Self::Exact(run)
+        } else {
+          conditions.push(Self::Exact(run).into_prefilter());
+          Self::Condition(Prefilter::all(conditions))
+        }
+      }
+      HirKind::Alternation(subs) => {
+        let implied: Vec<Self> = subs.iter().map(Self::of).collect();
+        let mut union = BTreeSet::new();
+        for i in &implied {
+          match i {
+            Self::Exact(exact) if union.len() + exact.len() <= MAX_EXACT => union.extend(exact.iter().cloned()),
+            _ => {
+              return Self::Condition(Prefilter::any_of(
+                implied.into_iter().map(Self::into_prefilter).collect(),
+              ));
+            }
+          }
+        }
+        Self::Exact(union)
+      }
+    }
+  }
+
+  fn into_prefilter(self) -> Prefilter {
+    match self {
+      Self::Exact(exact) if exact.contains("") => Prefilter::Any,
+      // A string containing another of the set adds nothing: the haystack contains that one too.
+      Self::Exact(exact) => {
+        Prefilter::any_of(
+          exact
+            .iter()
+            .filter(|s| !exact.iter().any(|other| other != *s && s.contains(other.as_str())))
+            .map(|s| Prefilter::Contains(s.clone()))
+            .collect(),
+        )
+      }
+      Self::Condition(condition) => condition,
+    }
+  }
+}
+
+/// Each character as the smallest of those it matches case-insensitively (its simple case folding orbit, as the
+/// `regex` crate's), so a case-insensitive match of `x` in `s` implies `fold(x)` in `fold(s)`. ASCII letters fold to
+/// uppercase: their orbits' other members (`ſ`, the Kelvin sign) are above ASCII.
+fn fold(c: char) -> char {
+  if c.is_ascii() {
+    return c.to_ascii_uppercase();
+  }
+  let mut orbit = ClassUnicode::new([ClassUnicodeRange::new(c, c)]);
+  orbit.case_fold_simple();
+  orbit.ranges()[0].start()
 }
 
 /// Capture groups in the order their `)` appears. In a match, the group closed last (`lastindex`) is the
@@ -172,8 +375,12 @@ struct Match<'a> {
 }
 
 impl<'a> Match<'a> {
-  fn search(pattern: &Pattern, haystack: &'a str) -> Option<Self> {
-    let captures = pattern.regex.captures(haystack)?;
+  /// `folded` is the haystack's [`fold`], for the pattern's prefilter.
+  fn search(pattern: &Pattern, haystack: &'a str, folded: &str) -> Option<Self> {
+    if !pattern.prefilter.holds(folded) {
+      return None;
+    }
+    let captures = pattern.regex().captures(haystack)?;
     let groups: Vec<Option<&str>> = (0..captures.len())
       .map(|i| captures.get(i).map(|m| m.as_str()))
       .collect();
@@ -266,12 +473,12 @@ fn non_empty(s: Option<&str>) -> Option<String> {
 type Versions = [Option<String>; 4];
 
 /// `_ParseUserAgent`: (family, [v1, v2, v3, None]).
-fn parse_user_agent(ua: &str) -> Result<(String, Versions), ParseError> {
+fn parse_user_agent(ua: &str, folded: &str) -> Result<(String, Versions), ParseError> {
   // Like upstream's loop, the last parser's values are kept when none gives a family.
   let (mut family, mut v1, mut v2, mut v3) = (None, None, None, None);
   for (pattern, rule) in &PARSERS.user_agent {
     (family, v1, v2, v3) = (None, None, None, None);
-    if let Some(m) = Match::search(pattern, ua) {
+    if let Some(m) = Match::search(pattern, ua, folded) {
       family = match rule.family_replacement.as_deref().filter(|r| !r.is_empty()) {
         Some(r) if r.contains("$1") => Some(family_template(r, m.group(1))?),
         Some(r) => Some(r.to_string()),
@@ -308,13 +515,13 @@ fn parse_user_agent(ua: &str) -> Result<(String, Versions), ParseError> {
 }
 
 /// `_ParseOS`: (family, [v1, v2, v3, v4]); unlike the browser's, empty versions are kept.
-fn parse_os(ua: &str) -> (String, Versions) {
+fn parse_os(ua: &str, folded: &str) -> (String, Versions) {
   let mut os = None;
   let mut versions: Versions = Default::default();
   for (pattern, rule) in &PARSERS.os {
     os = None;
     versions = Default::default();
-    if let Some(m) = Match::search(pattern, ua) {
+    if let Some(m) = Match::search(pattern, ua, folded) {
       os = match rule.os_replacement.as_deref().filter(|r| !r.is_empty()) {
         Some(r) => multi_replace(r, &m),
         None if m.lastindex.is_some() => m.group(1).map(str::to_string),
@@ -342,11 +549,11 @@ fn parse_os(ua: &str) -> (String, Versions) {
 }
 
 /// `_ParseDevice`: (family, brand, model).
-fn parse_device(ua: &str) -> (String, Option<String>, Option<String>) {
+fn parse_device(ua: &str, folded: &str) -> (String, Option<String>, Option<String>) {
   let (mut device, mut brand, mut model) = (None, None, None);
   for (pattern, rule) in &PARSERS.device {
     (device, brand, model) = (None, None, None);
-    if let Some(m) = Match::search(pattern, ua) {
+    if let Some(m) = Match::search(pattern, ua, folded) {
       device = match rule.device_replacement.as_deref().filter(|r| !r.is_empty()) {
         Some(r) => multi_replace(r, &m),
         None => m.group(1).map(str::to_string),
@@ -455,9 +662,10 @@ fn parse(ua: &str) -> Result<UserAgent, ParseError> {
 }
 
 fn parse_uncached(ua: &str) -> Result<UserAgent, ParseError> {
-  let (browser_family, browser_versions) = parse_user_agent(ua)?;
-  let (os_family, os_versions) = parse_os(ua);
-  let (device_family, device_brand, device_model) = parse_device(ua);
+  let folded: String = ua.chars().map(fold).collect();
+  let (browser_family, browser_versions) = parse_user_agent(ua, &folded)?;
+  let (os_family, os_versions) = parse_os(ua, &folded);
+  let (device_family, device_brand, device_model) = parse_device(ua, &folded);
   Ok(UserAgent {
     browser_family,
     browser_version: version_string(&browser_versions)?,
@@ -477,11 +685,62 @@ mod tests {
   fn all_regexes_compile() {
     let p = &*PARSERS;
     assert_eq!((p.user_agent.len(), p.os.len(), p.device.len()), (433, 204, 633));
+    let patterns = (p.user_agent.iter().map(|(pattern, _)| pattern))
+      .chain(p.os.iter().map(|(pattern, _)| pattern))
+      .chain(p.device.iter().map(|(pattern, _)| pattern));
+    for pattern in patterns {
+      pattern.regex();
+    }
+  }
+
+  #[test]
+  fn prefilters() {
+    let lit = |s: &str| Prefilter::Contains(s.into());
+    assert_eq!(Prefilter::new(r"(Chrome)/(\d+)", false), lit("CHROME/"));
+    assert_eq!(Prefilter::new(r"Sony ?(Ericsson|)", false), lit("SONY"));
+    assert_eq!(
+      Prefilter::new(r"(HbbTV)/1\.1\.1.{0,200}CE-HTML", false),
+      Prefilter::All(vec![lit("HBBTV/1.1.1"), lit("CE-HTML")])
+    );
+    assert_eq!(Prefilter::new(r"^(.{0,200}) Build", false), lit(" BUILD"));
+    assert_eq!(Prefilter::new(r"(a|.{2})x", false), lit("X"));
+    assert_eq!(Prefilter::new(r"\d+", false), Prefilter::Any);
+  }
+
+  #[test]
+  fn prefilters_match_what_regexes_match() {
+    // Case-insensitively, `s` matches `ſ` and `k` the Kelvin sign.
+    for (pattern, ci, haystack) in [
+      ("Samsung", true, "SAMſUNG"),
+      ("kindle", true, "\u{212A}INDLE"),
+      ("Lenovo", true, "lenovo"),
+      ("(?i:x)Y", false, "xY"),
+      ("Ä", true, "ä"),
+    ] {
+      let pattern = Pattern::new(pattern, ci);
+      let folded: String = haystack.chars().map(fold).collect();
+      assert!(pattern.regex().is_match(haystack), "{haystack}");
+      assert!(pattern.prefilter.holds(&folded), "{haystack}");
+    }
+  }
+
+  #[test]
+  fn fold_ascii_like_unicode() {
+    for c in (0..128u8).map(char::from) {
+      let mut orbit = ClassUnicode::new([ClassUnicodeRange::new(c, c)]);
+      orbit.case_fold_simple();
+      assert_eq!(fold(c), orbit.ranges()[0].start(), "{c:?}");
+    }
   }
 
   #[test]
   fn lastindex_like_python() {
-    let lastindex = |pattern: &str, s: &str| Match::search(&Pattern::new(pattern, false), s).unwrap().lastindex;
+    let lastindex = |pattern: &str, s: &str| {
+      let folded: String = s.chars().map(fold).collect();
+      Match::search(&Pattern::new(pattern, false), s, &folded)
+        .unwrap()
+        .lastindex
+    };
     assert_eq!(lastindex(r"((a)b)", "ab"), Some(1));
     assert_eq!(lastindex(r"(a)()", "a"), Some(2));
     assert_eq!(lastindex(r"a(b)?", "a"), None);
