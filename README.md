@@ -34,6 +34,8 @@ bugsink-rs reads and writes **upstream Bugsink's own Postgres schema**, pinned t
   sessions are not shared: after switching, everyone logs in again.
 - On startup the database's `django_migrations` are checked against 2.6.3: a database that is behind is refused (upgrade
   it with upstream first), as is one migrated by a newer upstream unless `--allow-newer-upstream-schema` is given.
+  Rows left by migrations upstream squashed away (`bugsink-db/upstream/superseded-migrations.txt`), which installs
+  older than that squash still have, are ignored, as Django does.
 
 Not covered: SQLite- or MySQL-backed upstream installs (migrate the data to Postgres first), and upstream's file-based
 event storage (skipped on purpose, see below).

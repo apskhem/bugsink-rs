@@ -31,6 +31,9 @@ pub const UPSTREAM_VERSION: &str = "2.6.3";
 const UPSTREAM_SCHEMA: &str = include_str!("../upstream/2.6.3-schema.sql");
 const UPSTREAM_SEED: &str = include_str!("../upstream/2.6.3-seed.sql");
 const UPSTREAM_MIGRATIONS: &str = include_str!("../upstream/2.6.3-migrations.txt");
+/// Migrations upstream shipped before squashing them into `*_b_squashed*` ones (without `replaces`) and deleting
+/// them. Installs from before the squash still have their `django_migrations` rows, which Django ignores; so do we.
+const SUPERSEDED_MIGRATIONS: &str = include_str!("../upstream/superseded-migrations.txt");
 
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
@@ -90,6 +93,7 @@ pub async fn prepare(pool: &PgPool, allow_newer_upstream: bool) -> Result<(), Sc
 
 async fn verify_upstream_version(pool: &PgPool, allow_newer_upstream: bool) -> Result<(), SchemaError> {
   let expected: BTreeSet<&str> = UPSTREAM_MIGRATIONS.lines().filter(|l| !l.is_empty()).collect();
+  let superseded: BTreeSet<&str> = SUPERSEDED_MIGRATIONS.lines().filter(|l| !l.is_empty()).collect();
   let applied: BTreeSet<String> = sqlx::query("SELECT app || ' ' || name AS m FROM django_migrations")
     .fetch_all(pool)
     .await?
@@ -105,7 +109,10 @@ async fn verify_upstream_version(pool: &PgPool, allow_newer_upstream: bool) -> R
   if !missing.is_empty() {
     return Err(SchemaError::Behind(missing));
   }
-  let unknown: Vec<String> = applied.into_iter().filter(|m| !expected.contains(m.as_str())).collect();
+  let unknown: Vec<String> = applied
+    .into_iter()
+    .filter(|m| !expected.contains(m.as_str()) && !superseded.contains(m.as_str()))
+    .collect();
   if !unknown.is_empty() {
     if !allow_newer_upstream {
       return Err(SchemaError::Ahead(unknown));
