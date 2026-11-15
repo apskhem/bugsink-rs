@@ -217,6 +217,9 @@ docker run -e DATABASE_URL=postgres://... -e BASE_URL=https://bugsink.example.co
 echo 'a-password' | docker run -i -e DATABASE_URL=postgres://... bugsink-rs create-superuser you@example.com
 ```
 
+As upstream's image, `serve` creates the first user from `CREATE_SUPERUSER=email:password` while the database has
+no users (and ignores it after), so a fresh installation needs no separate `create-superuser`.
+
 Ingestion quotas use upstream's environment variables and defaults: `MAX_EVENTS_PER_PROJECT_PER_5_MINUTES` (1000),
 `MAX_EVENTS_PER_PROJECT_PER_HOUR` (5000), `MAX_EVENTS_PER_PROJECT_PER_MONTH` (1000000), and the installation-wide
 `MAX_EVENTS_PER_5_MINUTES`, `MAX_EVENTS_PER_HOUR`, `MAX_EVENTS_PER_MONTH` (same defaults).

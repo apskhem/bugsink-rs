@@ -321,6 +321,33 @@ pub async fn create_superuser(pool: &PgPool, email: &str, raw_password: &str) ->
   Ok(insert_user(pool, &encoded, &username, &email, true, true).await?)
 }
 
+/// Upstream's `prestart` (`_create_superuser_if_needed`): `CREATE_SUPERUSER=email:password` creates the installation's
+/// first user, and does nothing once any user exists (so a stale value keeps the server starting).
+pub async fn create_superuser_if_needed(pool: &PgPool, spec: Option<&str>) -> anyhow::Result<()> {
+  let Some(spec) = spec.filter(|spec| !spec.is_empty()) else {
+    return Ok(());
+  };
+  let Some((email, password)) = spec.split_once(':') else {
+    anyhow::bail!("CREATE_SUPERUSER should be in the format 'email:password'");
+  };
+  let any_user: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM auth_user)")
+    .fetch_one(pool)
+    .await?;
+  if any_user {
+    tracing::info!(
+      "Superuser not created: _any_ user(s) already exist(s). CREATE_SUPERUSER only works for the initial user."
+    );
+    return Ok(());
+  }
+  // validated only when creating, like upstream
+  if validation::clean_email(email).is_err() {
+    anyhow::bail!("CREATE_SUPERUSER email should be a valid email address");
+  }
+  create_superuser(pool, email, password).await?;
+  tracing::info!("Superuser created: {email}");
+  Ok(())
+}
+
 /// An `auth_user` row, the model's defaults spelled out; its id. Superusers are staff too.
 pub(crate) async fn insert_user<'e>(
   executor: impl sqlx::PgExecutor<'e>,

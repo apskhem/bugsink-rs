@@ -107,6 +107,10 @@ struct ServeArgs {
   /// Applies to both compressed and decompressed ingest bodies.
   #[arg(long, env = "BUGSINK_MAX_BODY_BYTES", default_value_t = 20 * 1024 * 1024)]
   max_body_bytes: usize,
+
+  /// `email:password`: create this superuser on start while there are no users yet (upstream's `prestart`).
+  #[arg(long, env = "CREATE_SUPERUSER", hide_env_values = true)]
+  create_superuser: Option<String>,
 }
 
 #[tokio::main]
@@ -163,6 +167,7 @@ async fn main() -> anyhow::Result<()> {
 
 async fn serve(pool: PgPool, args: ServeArgs, settings: Settings) -> anyhow::Result<()> {
   let client_addr = settings.proxy.client_addr()?;
+  accounts::create_superuser_if_needed(&pool, args.create_superuser.as_deref()).await?;
   let index = args.static_dir.join("index.html");
   if !index.exists() {
     tracing::warn!(path = %index.display(), "frontend not built; only the API will be useful");
