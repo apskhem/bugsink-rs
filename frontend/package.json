@@ -1,6 +1,6 @@
 {
   "name": "bugsink-frontend",
-  "version": "2.6.1",
+  "version": "2.6.2",
   "private": true,
   "description": "The client-side-rendered UI of bugsink-rs: upstream Bugsink's pages, on the /api/v1 JSON API.",
   "author": "Apisit Ritruengroj <apisit_lon@hotmail.com>",

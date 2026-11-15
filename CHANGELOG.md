@@ -3,7 +3,7 @@
 Versions follow the upstream Bugsink line that bugsink-rs is a drop-in for: `MAJOR.MINOR` is upstream's, the patch
 number counts bugsink-rs's own releases (see "Versions" in the README).
 
-## Unreleased
+## 2.6.2 (2026-11-16)
 
 - Much less memory: deriving browser/OS/device from User-Agent headers took ~175 MB, plus ~75 MB per thread that did
   it, for the ~1,300 compiled regexes of upstream's parser data. A regex is now only compiled for user agents that
