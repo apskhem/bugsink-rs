@@ -97,7 +97,9 @@ export const ProjectSummary = z.object({
   digested_event_count: z.number(),
   my_role: z.number().nullable(),
   is_admin: z.boolean(),
-  latest_release: z.string().nullable()
+  latest_release: z.string().nullable(),
+  /** Banners atop its issue list and issue pages (its ingest quota). */
+  warnings: z.array(z.string())
 });
 export type ProjectSummary = z.infer<typeof ProjectSummary>;
 

@@ -35,7 +35,9 @@ export const Issue = IssueSummary.extend({
   /** `[{"period", "nr_of_periods", "volume"}]`, as stored. */
   unmute_on_volume_based_conditions: z.unknown(),
   project_has_releases: z.boolean(),
-  latest_release: z.string().nullable()
+  latest_release: z.string().nullable(),
+  /** The project's banners (its ingest quota). */
+  project_warnings: z.array(z.string())
 });
 export type Issue = z.infer<typeof Issue>;
 
@@ -147,7 +149,9 @@ export const EventDisplay = z.object({
   logentry_info: InfoList,
   deployment_info: InfoList,
   contexts: z.unknown(),
-  breadcrumbs: z.array(z.unknown()).nullable()
+  breadcrumbs: z.array(z.unknown()).nullable(),
+  /** "Sourcemap IDs": (file name, "<debug id>  (uploaded)" or "<debug id>  (not uploaded)"). */
+  sourcemaps_images: z.array(z.tuple([z.string(), z.string()]))
 });
 export type EventDisplay = z.infer<typeof EventDisplay>;
 

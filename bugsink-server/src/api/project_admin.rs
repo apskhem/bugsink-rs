@@ -96,6 +96,7 @@ async fn list(
   CurrentUser { user, .. }: CurrentUser,
   Query(query): Query<TabQuery>,
 ) -> ApiResult<ProjectList> {
+  state.phone_home();
   let (tab, items) = projects::projects(&state.pool, &user, query.tab.as_deref()).await?;
   let ids: Vec<i64> = items.iter().map(|p| p.id).collect();
   let mut sparklines = pages::project_list_sparklines(&state.pool, &ids, Utc::now()).await?;

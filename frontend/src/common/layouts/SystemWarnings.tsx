@@ -1,10 +1,30 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useLocation } from "react-router";
 
 import { sessionApi, type SystemWarning } from "services/session";
 
-/** The message, with its `link_text` (at its end) linking to `link`. */
-function Message({ warning: { message, link, link_text } }: { warning: SystemWarning }) {
+/** The message, with its `link_text` (at its end) linking to `link`; a remote message's parts, those with a `url`
+ * as links. */
+function Message({ warning: { message, link, link_text, parts } }: { warning: SystemWarning }) {
+  if (parts) {
+    return parts.map((part, i) => (
+      <Fragment key={i}>
+        {i > 0 && " "}
+        {part.url ? (
+          <a
+            href={part.url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="font-bold text-slate-800 dark:text-slate-100"
+          >
+            {part.text}
+          </a>
+        ) : (
+          <span>{part.text}</span>
+        )}
+      </Fragment>
+    ));
+  }
   const at = link && link_text ? message.lastIndexOf(link_text) : -1;
   if (!link || at < 0) {
     return message;
@@ -36,14 +56,18 @@ export default function SystemWarnings() {
     };
   }, [pathname]);
 
-  async function silence() {
-    await sessionApi.silenceEmailWarning(undefined);
+  async function silence(warning: SystemWarning) {
+    if (warning.remote_message === null) {
+      await sessionApi.silenceEmailWarning(undefined);
+    } else {
+      await sessionApi.silenceRemoteMessage(undefined, { params: { key: warning.remote_message } });
+    }
     setWarnings(await sessionApi.systemWarnings());
   }
 
   return warnings.map((warning) => (
     <div
-      key={warning.message}
+      key={warning.remote_message ?? warning.message}
       className="flex p-4 bg-yellow-100 dark:bg-amber-800 border-b-2 border-yellow-200 dark:border-amber-900"
     >
       <div className="text-slate-800 dark:text-slate-100">
@@ -55,7 +79,7 @@ export default function SystemWarnings() {
           <form
             onSubmit={(event) => {
               event.preventDefault();
-              void silence();
+              void silence(warning);
             }}
           >
             <button type="submit">

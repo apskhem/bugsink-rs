@@ -182,6 +182,9 @@ export default function EventDetails({ display, data, tags, projectId, q, eventL
 
       {truthy(parsed["modules"]) && <Section id="modules" title="Modules" items={linebreaks(modules)} />}
       {truthy(parsed["sdk"]) && <Section id="sdk" title="SDK" items={linebreaks(items(parsed["sdk"]))} />}
+      {display.sourcemaps_images.length > 0 && (
+        <Section id="sourcemaps_images" title="Sourcemap IDs" items={linebreaks(display.sourcemaps_images)} />
+      )}
       {truthy(parsed["extra"]) && <Section id="extra" title="Extra" items={linebreaks(items(parsed["extra"]))} />}
     </>
   );

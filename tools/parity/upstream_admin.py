@@ -178,6 +178,7 @@ def run(step):
         "settings": lambda: (gv.settings_view, get(), {}),
         "system_warnings": lambda: (None, get(), {}),
         "silence_email": lambda: (gv.silence_email_system_warning, post({}), {}),
+        "silence_remote": lambda: (gv.silence_remote_message, post({}), {"message_id": s["key"]}),
     })
     for k in ("team", "project"):
         mod = {"team": tv, "project": pv}[k]
@@ -279,7 +280,8 @@ def read(op, c):
     if op == "counts":
         return {app: {m: n.count for m, n in models.items()} for app, models in c["counts"].items() if app != "snappea"}
     if op == "system_warnings":
-        return [[" ".join(re.sub("<[^>]*>", "", str(w.message)).split()), w.ignore_url is not None]
+        return [[[[p.text, p.url] for p in w.parts] if hasattr(w, "parts")
+                 else " ".join(re.sub("<[^>]*>", "", str(w.message)).split()), w.ignore_url is not None]
                 for w in c["warnings"]]
     if op == "services":
         return [[sc.display_name, sc.kind, json.loads(sc.config)] for sc in c["service_configs"].order_by("id")]

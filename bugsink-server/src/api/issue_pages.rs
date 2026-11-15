@@ -95,6 +95,8 @@ struct IssuePage {
   summary: IssueSummary,
   #[serde(flatten)]
   detail: IssueDetail,
+  /// `issue.project.get_warnings`: banners atop the issue's pages.
+  project_warnings: Vec<String>,
 }
 
 async fn get_issue(
@@ -104,7 +106,13 @@ async fn get_issue(
 ) -> ApiResult<IssuePage> {
   let summary = accessible_issue(&state.pool, &user, issue_id).await?;
   let detail = pages::issue_detail(&state.pool, issue_id).await?;
-  Ok(Json(IssuePage { summary, detail }))
+  let project_warnings =
+    crate::installation::project_warnings(&state.pool, &state.settings.quotas, summary.project_id, Utc::now()).await?;
+  Ok(Json(IssuePage {
+    summary,
+    detail,
+    project_warnings,
+  }))
 }
 
 #[derive(Deserialize)]
@@ -121,6 +129,9 @@ async fn issue_tags(
   Query(query): Query<TagsQuery>,
 ) -> ApiResult<Vec<pages::KeyTags>> {
   let issue = accessible_issue(&state.pool, &user, issue_id).await?;
+  if query.all {
+    state.phone_home(); // the tags tab, not the header's summary
+  }
   let cutoff = if query.all {
     pages::TAGS_ALL_CUTOFF
   } else {
@@ -136,6 +147,7 @@ async fn issue_groupings(
   CurrentUser { user, .. }: CurrentUser,
   Path(issue_id): Path<Uuid>,
 ) -> ApiResult<Vec<pages::Grouping>> {
+  state.phone_home();
   accessible_issue(&state.pool, &user, issue_id).await?;
   Ok(Json(pages::groupings(&state.pool, issue_id).await?))
 }
@@ -145,6 +157,7 @@ async fn issue_history(
   CurrentUser { user, .. }: CurrentUser,
   Path(issue_id): Path<Uuid>,
 ) -> ApiResult<Vec<pages::TurningPoint>> {
+  state.phone_home();
   accessible_issue(&state.pool, &user, issue_id).await?;
   Ok(Json(pages::history(&state.pool, issue_id).await?))
 }
@@ -309,6 +322,7 @@ async fn issue_event(
   Path((issue_id, selector)): Path<(Uuid, String)>,
   Query(query): Query<SearchQuery>,
 ) -> ApiResult<EventPage> {
+  state.phone_home();
   let issue = accessible_issue(&state.pool, &user, issue_id).await?;
   let search = Search::prepare(&state.pool, issue.project_id, &query.q).await?;
   let event = match selector.as_str() {
@@ -344,6 +358,7 @@ async fn issue_event_nav(
   Path((issue_id, digest_order, nav)): Path<(Uuid, i32, String)>,
   Query(query): Query<SearchQuery>,
 ) -> ApiResult<EventPage> {
+  state.phone_home();
   let issue = accessible_issue(&state.pool, &user, issue_id).await?;
   let next = match nav.as_str() {
     "next" => true,

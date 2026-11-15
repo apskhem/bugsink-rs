@@ -214,6 +214,10 @@ INSTALLATION = [
     step(ALICE, "silence_email"),
     step(ADMIN, "silence_email"),
     step(ALICE, "system_warnings"),
+    step(ALICE, "silence_remote", key="fix"),  # superusers only
+    step(ADMIN, "silence_remote", key="fix"),
+    step(ADMIN, "silence_remote", key="no-such-message"),
+    step(ADMIN, "system_warnings"),
 ]
 steps += INSTALLATION
 

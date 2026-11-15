@@ -14,6 +14,7 @@ pub mod installation;
 pub mod issues;
 pub mod mail;
 pub mod memberships;
+pub mod phonehome;
 pub mod projects;
 pub mod protocol;
 pub mod proxy;
@@ -39,6 +40,8 @@ pub struct Settings {
   pub proxy: proxy::ProxySettings,
   #[command(flatten)]
   pub users: memberships::UserSettings,
+  #[command(flatten)]
+  pub phonehome: phonehome::PhonehomeSettings,
 }
 
 /// Every background job kind and its handler.
@@ -55,4 +58,5 @@ pub fn job_registry(settings: &Settings) -> tasks::Registry {
     .register_with(alerts.clone(), alerts::handle_job)
     .register_with(alerts.clone(), alerts::messaging::handle_test_job)
     .register_with(alerts, alerts::messaging::handle_job)
+    .register_with(Arc::new(settings.clone()), phonehome::handle_job)
 }

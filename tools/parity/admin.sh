@@ -39,6 +39,18 @@ for name, superuser in [("admin", True), ("alice", False), ("bob", False), ("car
           f"'{name}@example.org', false, true, now(), true, 'system', 'auto');")
 PY
 )
+# Messages from phoning home, as if bugsink.com had answered with them: for 2.6.3 and older (not shown), for any version,
+# for versions before 2.6.4, one no longer active, one silenced.
+users_sql+="
+INSERT INTO phonehome_remotemessage (key, applies_until_version, position, active, silenced) VALUES
+    ('until-2-6-3', '2.6.3', 0, true, false), ('any', '', 2, true, false), ('fix', '2.6.4', 1, true, false),
+    ('gone', '', 3, false, false), ('silenced', '', 4, true, true);
+INSERT INTO phonehome_remotemessagepart (message_id, position, text, url)
+SELECT m.id, p.position, p.text, p.url FROM phonehome_remotemessage m JOIN (VALUES
+    ('until-2-6-3', 0, 'Old news', ''), ('any', 1, 'two parts', ''), ('any', 0, 'Hello <b>&', ''),
+    ('fix', 0, 'A security fix is out:', ''), ('fix', 1, 'upgrade', 'https://www.bugsink.com/'),
+    ('fix', 2, 'now.', ''), ('gone', 0, 'Gone', ''), ('silenced', 0, 'Silenced', '')) AS p (key, position, text, url)
+ON p.key = m.key;"
 
 status=0
 for mode in email links; do
@@ -62,7 +74,7 @@ for mode in email links; do
 
     # bugsink-rs
     ours_env=(DATABASE_URL="postgres://postgres:pw@localhost:$port/ours_$mode" BASE_URL="$base"
-              ALERTS_WEBHOOK_DENY_NON_GLOBAL=false)
+              ALERTS_WEBHOOK_DENY_NON_GLOBAL=false PHONEHOME=false)
     for kv in ${email_env[@]+"${email_env[@]}"}; do ours_env+=("$(echo "$kv" | sed 's/@HOST@/127.0.0.1/; s/@PORT@/52526/')"); done
     env "${ours_env[@]}" ./target/release/bugsink migrate >/dev/null 2>&1
     echo "$users_sql" | docker exec -i "$pg" psql -U postgres -d "ours_$mode" -q

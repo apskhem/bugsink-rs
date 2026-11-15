@@ -11,6 +11,7 @@ use bugsink_server::{
   grouping,
   ingest,
   job_registry,
+  phonehome,
   projects,
   tasks,
   vacuum,
@@ -90,6 +91,8 @@ enum Command {
   /// Create a superuser that logs in with this email address as username (upstream's `CREATE_SUPERUSER`). Reads
   /// the password from the first line of stdin.
   CreateSuperuser { email: String },
+  /// Print the message phoning home sends (upstream's `print_phonehome`).
+  PrintPhonehome,
 }
 
 #[derive(Args)]
@@ -142,6 +145,11 @@ async fn main() -> anyhow::Result<()> {
     }
     Command::CreateProject { name } => create_project(&pool, &name, cli.settings.alerts.base_url()).await,
     Command::CreateSuperuser { email } => create_superuser(&pool, &email).await,
+    Command::PrintPhonehome => {
+      let body = phonehome::message_body(&pool, &cli.settings).await?;
+      println!("{}", serde_json::to_string_pretty(&body)?);
+      Ok(())
+    }
     Command::SendWelcomeEmail { email, reason } => {
       accounts::self_service::send_welcome_email(&pool, &email, &reason).await?;
       println!("Email sent successfully (delayed task)");
@@ -168,6 +176,10 @@ async fn main() -> anyhow::Result<()> {
 async fn serve(pool: PgPool, args: ServeArgs, settings: Settings) -> anyhow::Result<()> {
   let client_addr = settings.proxy.client_addr()?;
   accounts::create_superuser_if_needed(&pool, args.create_superuser.as_deref()).await?;
+  // upstream's `prestart` kicks off phoning home too, so a fresh installation phones home before anyone visits
+  if settings.phonehome.phonehome {
+    phonehome::kick_off_on_start(&pool).await?;
+  }
   let index = args.static_dir.join("index.html");
   if !index.exists() {
     tracing::warn!(path = %index.display(), "frontend not built; only the API will be useful");

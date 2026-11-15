@@ -200,7 +200,8 @@ async fn main() -> anyhow::Result<()> {
                            "multiple_thread_stacktraces": s.multiple_thread_stacktraces,
                            "request_repr": d.request_repr},
             "details": {"key_info": d.key_info, "logentry_info": d.logentry_info,
-                        "deployment_info": d.deployment_info, "contexts": d.contexts},
+                        "deployment_info": d.deployment_info, "contexts": d.contexts,
+                        "sourcemaps_images": d.sourcemaps_images},
             "breadcrumbs": d.breadcrumbs,
         })
       }

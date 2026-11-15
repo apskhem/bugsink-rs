@@ -162,3 +162,7 @@
 {"n": 161, "as": "alice@example.org", "op": "silence_email"}
 {"n": 162, "as": "admin@example.org", "op": "silence_email"}
 {"n": 163, "as": "alice@example.org", "op": "system_warnings"}
+{"n": 164, "as": "alice@example.org", "op": "silence_remote", "key": "fix"}
+{"n": 165, "as": "admin@example.org", "op": "silence_remote", "key": "fix"}
+{"n": 166, "as": "admin@example.org", "op": "silence_remote", "key": "no-such-message"}
+{"n": 167, "as": "admin@example.org", "op": "system_warnings"}

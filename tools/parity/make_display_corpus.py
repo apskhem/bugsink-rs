@@ -105,6 +105,8 @@ events += [
 
 # sourcemap images: frames of those files get the debug id
 DEBUG_ID = "c941d872-af1f-4f0c-a7ff-ad3d295fe153"
+UPLOADED_ID, LEGACY_ID, OTHER_KIND_ID = (
+    "0d9e8b0e-7a49-4c8f-9a37-2a1f2d3c4b5a", "1e0f9c1f-8b5a-4d90-8b48-3b2e3e4d5c6b", "2f1a0d20-9c6b-4ea1-9c59-4c3f4f5e6d7c")
 js_frames = [frame("bundle", abs_path="https://x.example/app.js", filename="app.js"),
              frame("other", abs_path="https://x.example/vendor.js", filename="vendor.js"),
              frame("byname", filename="lib.js")]
@@ -118,6 +120,14 @@ for images in [
     [{"type": "sourcemap", "code_file": None, "debug_id": DEBUG_ID}],
     [{"type": "sourcemap", "debug_id": DEBUG_ID}, "debug_id and code_file", ["x"]],
     ["has neither"], {"key": "dict"}, "string", [], None, 5,
+    # the details' "Sourcemap IDs": uploaded for the project, uploaded before uploads were per project (reads.sh
+    # adds those two), uploaded as another kind of file, not uploaded; file names are the path's last part
+    [{"type": "sourcemap", "code_file": "https://x.example/static/uploaded.js", "debug_id": UPLOADED_ID},
+     {"type": "sourcemap", "code_file": "legacy.js", "debug_id": LEGACY_ID},
+     {"type": "sourcemap", "code_file": "dir/other-kind.js", "debug_id": OTHER_KIND_ID},
+     {"type": "sourcemap", "code_file": "https://x.example/app.js", "debug_id": DEBUG_ID},
+     {"type": "sourcemap", "code_file": "https://x.example/static/", "debug_id": DEBUG_ID}],
+    [{"type": "sourcemap", "code_file": 5, "debug_id": DEBUG_ID}],  # no file name: upstream's details page fails
 ]:
     events.append({"platform": "javascript", "exception": [exc("TypeError", "sourcemaps", *js_frames)],
                    "debug_meta": {"images": images}})

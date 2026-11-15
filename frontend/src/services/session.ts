@@ -32,7 +32,10 @@ export const SystemWarning = z.object({
   link: z.string().nullable(),
   /** The end of the message that links to `link`. */
   link_text: z.string().nullable(),
-  silenceable: z.boolean()
+  silenceable: z.boolean(),
+  /** A message from phoning home: its key (to silence it) and its parts, shown separated by spaces. */
+  remote_message: z.string().nullable(),
+  parts: z.array(z.object({ text: z.string(), url: z.string() })).nullable()
 });
 export type SystemWarning = z.infer<typeof SystemWarning>;
 
@@ -55,6 +58,12 @@ const endpoints = makeApi([
   { method: "post", path: "/auth/logout", alias: "logout", response: z.unknown() },
   { method: "get", path: "/system-warnings", alias: "systemWarnings", response: z.array(SystemWarning) },
   { method: "post", path: "/system-warnings/email/silence", alias: "silenceEmailWarning", response: z.unknown() },
+  {
+    method: "post",
+    path: "/system-warnings/remote/:key/silence",
+    alias: "silenceRemoteMessage",
+    response: z.unknown()
+  },
   { method: "get", path: "/home", alias: "home", response: Home }
 ]);
 

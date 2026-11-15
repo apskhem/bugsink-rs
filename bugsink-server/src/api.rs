@@ -95,6 +95,11 @@ impl ApiState {
     })
   }
 
+  /// Upstream's `phone_home` decorator, on the pages it decorates (`crate::phonehome`).
+  pub fn phone_home(&self) {
+    crate::phonehome::kick_off(&self.pool, &self.settings.phonehome);
+  }
+
   pub fn memberships(&self) -> memberships::Context {
     memberships::Context {
       pool: self.pool.clone(),
@@ -417,6 +422,9 @@ struct ProjectSummary {
   is_admin: bool,
   #[sqlx(skip)]
   latest_release: Option<String>,
+  /// `Project.get_warnings`: banners atop its issue list and issue pages.
+  #[sqlx(skip)]
+  warnings: Vec<String>,
 }
 
 async fn project_summary(
@@ -439,6 +447,8 @@ async fn project_summary(
   require_project_access(&state.pool, &user, project_id).await?;
   summary.is_admin = memberships::is_project_admin(&state.pool, &user, project_id).await?;
   summary.latest_release = crate::releases::latest_release_version(&state.pool, project_id).await?;
+  summary.warnings =
+    crate::installation::project_warnings(&state.pool, &state.settings.quotas, project_id, Utc::now()).await?;
   Ok(Json(summary))
 }
 
@@ -460,6 +470,7 @@ async fn list_issues(
   Path(project_id): Path<i64>,
   Query(query): Query<IssueListQuery>,
 ) -> ApiResult<Paged<IssueListItem>> {
+  state.phone_home();
   accessible_project(&state.pool, &user, project_id).await?;
   let search = Search::prepare(&state.pool, project_id, &query.q).await?;
   query.fetch(&state.pool, &[project_id], &search).await
@@ -486,6 +497,7 @@ async fn global_issue_list(
   CurrentUser { user, .. }: CurrentUser,
   Query(query): Query<IssueListQuery>,
 ) -> ApiResult<Paged<IssueListItem>> {
+  state.phone_home();
   if !query.q.is_empty() {
     return Err(ApiError::BadRequest("search (q) is per project, as upstream's".into()));
   }
@@ -610,6 +622,7 @@ async fn list_events(
   Path(issue_id): Path<Uuid>,
   Query(query): Query<EventListQuery>,
 ) -> ApiResult<Paged<EventSummary>> {
+  state.phone_home();
   let issue = accessible_issue(&state.pool, &user, issue_id).await?;
   let page = Page {
     offset: query.offset,

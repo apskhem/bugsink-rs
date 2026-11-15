@@ -30,3 +30,5 @@ SELECT concat_ws(' | ', 'service', p.slug, s.display_name, s.kind, s.config, s.l
                  coalesce(s.last_failure_is_json::text, 'null'), coalesce(s.last_failure_error_type, 'null'),
                  coalesce(s.last_failure_error_message, 'null'))
 FROM alerts_messagingserviceconfig s JOIN projects_project p ON p.id = s.project_id ORDER BY p.slug, s.display_name, s.id;
+SELECT concat_ws(' | ', 'remote_message', key, applies_until_version, position, active, silenced)
+FROM phonehome_remotemessage ORDER BY key;

@@ -243,7 +243,7 @@ with mock.patch.object(views, "render", capture), \
                 result[part] = {
                     "key_info": [[k, dates[k].isoformat() if k in dates else v] for k, v in c["key_info"]],
                     "logentry_info": c["logentry_info"], "deployment_info": c["deployment_info"],
-                    "contexts": c["contexts"]}
+                    "contexts": c["contexts"], "sourcemaps_images": c["sourcemaps_images"]}
             else:
                 result[part] = c["breadcrumbs"]
         print(json.dumps({"input": {"kind": "display", "event": str(event.id)}, "result": result}, default=str))

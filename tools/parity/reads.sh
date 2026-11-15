@@ -42,6 +42,18 @@ python3 tools/parity/make_shown_steps.py > "$out/shown.jsonl"
 grep -v -e alerts_messagingserviceconfig -e 'SET retention_max_event_count' -e '"vacuum"' \
     tools/parity/digest-steps.jsonl | cat - "$out/busy.jsonl" "$out/shown.jsonl" \
     | ./target/debug/examples/replay >/dev/null
+# Uploaded sourcemaps for the details' "Sourcemap IDs" (make_display_corpus.py): one for project 1, one from before
+# uploads were per project, one that isn't a sourcemap. Valid but empty, and for files no frame is in.
+docker exec -i "$pg" psql -q -U postgres -d reads <<'SQL'
+INSERT INTO files_file (checksum, filename, size, data, accessed_at, created_at)
+VALUES ('parity', 'parity.js.map', 51, convert_to('{"version":3,"sources":[],"names":[],"mappings":""}', 'UTF8'),
+        now(), now());
+INSERT INTO files_filemetadata (file_id, project_id, debug_id, file_type, data, created_at)
+SELECT id, p, d::uuid, t, '{}', now() FROM files_file,
+    (VALUES (1, '0d9e8b0e-7a49-4c8f-9a37-2a1f2d3c4b5a', 'source_map'),
+            (NULL, '1e0f9c1f-8b5a-4d90-8b48-3b2e3e4d5c6b', 'source_map'),
+            (1, '2f1a0d20-9c6b-4ea1-9c59-4c3f4f5e6d7c', 'debug_file')) AS m (p, d, t);
+SQL
 
 docker run --rm -i --network "$net" -e SECRET_KEY=parity -e "DATABASE_URL=postgres://postgres:pw@$pg:5432/reads" \
     "$image" bugsink-manage shell -c "$(cat tools/parity/upstream_reads.py)" | grep '^{' > "$out/upstream.jsonl"

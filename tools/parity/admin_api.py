@@ -156,6 +156,7 @@ def run(s):
         "settings": lambda: ("GET", "/api/v1/settings", None),
         "system_warnings": lambda: ("GET", "/api/v1/system-warnings", None),
         "silence_email": lambda: ("POST", "/api/v1/system-warnings/email/silence", None),
+        "silence_remote": lambda: ("POST", f"/api/v1/system-warnings/remote/{s['key']}/silence", None),
     })
     for k in ("team", "project"):
         calls.update({
@@ -214,7 +215,8 @@ def read(op, r):
     if op == "counts":
         return {app: models for app, models in r.items() if app != "jobs"}
     if op == "system_warnings":
-        return [[w["message"], w["silenceable"]] for w in r]
+        return [[[[p["text"], p["url"]] for p in w["parts"]] if w["parts"] is not None else w["message"],
+                 w["silenceable"]] for w in r]
     if op == "services":
         return [[sc["display_name"], sc["kind"], sc["config"]] for sc in r["services"]]
     return None

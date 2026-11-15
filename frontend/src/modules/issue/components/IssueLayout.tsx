@@ -12,6 +12,7 @@ import { useProjectName, useQ } from "modules/issue/hooks";
 import { dateTime } from "modules/issue/utils/dates";
 import { issha, shortsha, summarizedReleases } from "modules/issue/utils/releases";
 import { tagDrilldownHref } from "modules/issue/utils/tags";
+import ProjectWarnings from "modules/issues/components/ProjectWarnings";
 import { apiError } from "services/http";
 import { issueApi, VolumeBasedCondition, type Event, type Issue, type KeyTags } from "services/issue";
 
@@ -74,6 +75,7 @@ function IssuePage({ issue, tab, version, onChanged, event, requestRepr, childre
 
   return (
     <>
+      <ProjectWarnings warnings={issue.project_warnings} />
       {/* container for the white bit (issue title, buttons) at the top of the page */}
       <div className="m-4 flex flex-col lg:flex-row-reverse">
         <div className="ml-auto flex-none pb-4 lg:pb-0">

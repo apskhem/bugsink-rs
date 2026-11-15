@@ -55,6 +55,10 @@ pub fn routes() -> Router<ApiState> {
     .route("/api/v1/settings", get(settings))
     .route("/api/v1/system-warnings", get(system_warnings))
     .route("/api/v1/system-warnings/email/silence", post(silence_email_warning))
+    .route(
+      "/api/v1/system-warnings/remote/{key}/silence",
+      post(silence_remote_message),
+    )
     .route("/api/v1/home", get(home))
     .route("/health/ready", get(|| async { "OK" }))
 }
@@ -316,8 +320,20 @@ async fn silence_email_warning(
   Ok(StatusCode::NO_CONTENT)
 }
 
+/// `silence_remote_message`: a message from phoning home (`crate::phonehome`) is no longer shown.
+async fn silence_remote_message(
+  State(state): State<ApiState>,
+  CurrentUser { user, .. }: CurrentUser,
+  Path(key): Path<String>,
+) -> Result<StatusCode, ApiError> {
+  require_superuser(&user)?;
+  crate::phonehome::silence(&state.pool, &key).await?;
+  Ok(StatusCode::NO_CONTENT)
+}
+
 /// Where `/` takes you: `{"go": "issues", "project_id"}`, `{"go": "projects"}` or `{"go": "teams"}`.
 async fn home(State(state): State<ApiState>, CurrentUser { user, .. }: CurrentUser) -> ApiResult<Value> {
+  state.phone_home();
   Ok(Json(
     installation::home(&state.pool, &user, state.settings.users.single_team()).await?,
   ))

@@ -5,14 +5,14 @@
 //! - stack traces: exceptions (or else threads, or else the event's stacktrace), annotated where the SDK trimmed
 //!   variables (`_meta`), frames of sourcemapped files marked with their debug id, the raise point marked, and newest
 //!   call first for every platform but Python ("stack of plates"); other threads' stack traces
-//! - details: key info, log entry, deployment and contexts (incl. browser/OS from the User-Agent)
+//! - details: key info, log entry, deployment and contexts (incl. browser/OS from the User-Agent), sourcemap images
 //! - breadcrumbs
 //!
 //! Where upstream's view fails on malformed event data (a 500), this still gives what it can. Where upstream gives up
 //! on a step and carries on (the `_meta` annotations, sourcemaps), it stops at the same point.
 //!
 //! SKIPPED(parity) (optional extras, see the README): applying uploaded sourcemaps (frames get their debug id as
-//! if no sourcemap was uploaded) and the event details' list of sourcemap images.
+//! if no sourcemap was uploaded).
 
 use chrono::{
   DateTime,
@@ -66,6 +66,8 @@ pub struct EventDisplay {
   pub deployment_info: Vec<(String, Value)>,
   pub contexts: Value,
   pub breadcrumbs: Option<Vec<Value>>,
+  /// The details tab's "Sourcemap IDs": (file name, "<debug id>  (uploaded)" or "... (not uploaded)").
+  pub sourcemaps_images: Vec<(String, String)>,
 }
 
 #[derive(Debug, Serialize)]
@@ -84,7 +86,7 @@ pub struct Stacktraces {
 /// The display of a stored event; None when its payload is in upstream's file storage (not readable yet).
 pub async fn for_event(pool: &bugsink_db::PgPool, event_id: Uuid) -> sqlx::Result<Option<EventDisplay>> {
   let row = sqlx::query(
-    "SELECT e.id, e.event_id, e.issue_id, e.calculated_type, e.calculated_value, i.transaction, e.timestamp,
+    "SELECT e.id, e.event_id, e.issue_id, e.project_id, e.calculated_type, e.calculated_value, i.transaction, e.timestamp,
                 e.ingested_at, e.digested_at, e.digest_order, host(e.remote_addr) AS remote_addr, e.platform,
                 coalesce(g.grouping_key, '') AS grouping_key,
                 CASE WHEN e.storage_backend IS NULL THEN e.data END AS data
@@ -115,7 +117,9 @@ pub async fn for_event(pool: &bugsink_db::PgPool, event_id: Uuid) -> sqlx::Resul
     platform: row.get("platform"),
     grouping_key: row.get("grouping_key"),
   };
-  Ok(Some(display(&facts, &data)))
+  let mut display = display(&facts, &data);
+  display.sourcemaps_images = sourcemaps_images(pool, row.get("project_id"), &data).await?;
+  Ok(Some(display))
 }
 
 pub fn display(facts: &EventFacts, data: &Value) -> EventDisplay {
@@ -131,6 +135,7 @@ pub fn display(facts: &EventFacts, data: &Value) -> EventDisplay {
       .collect(),
     contexts: contexts_enriched_with_user_agent(data),
     breadcrumbs: values(data.get("breadcrumbs")).ok().flatten(),
+    sourcemaps_images: vec![], // looked up by `for_event`
   }
 }
 
@@ -578,16 +583,16 @@ fn annotate_var(var: &mut Value, meta_var: &Value, pointer: &str) -> Result<(Tri
   Ok((in_original, in_result))
 }
 
-/// `apply_sourcemaps` without uploaded sourcemaps: frames of files that an image says have a sourcemap get its debug
-/// id, as a hint to upload it.
-pub(crate) fn mark_debug_ids(entries: &mut [Value], data: &Value) -> Partial {
+/// `debug_meta`'s sourcemap images as `{code_file: debug_id}`, as `apply_sourcemaps` and `get_sourcemap_images` find
+/// them: None without images, Err where upstream's lookups fail.
+fn sourcemap_debug_ids(data: &Value) -> Result<Option<Vec<(Value, Uuid)>>, ()> {
   let images = match data.get("debug_meta") {
-    None => return Ok(()),
+    None => return Ok(None),
     Some(Value::Object(m)) => m.get("images").cloned().unwrap_or(json!([])),
     Some(_) => return Err(()),
   };
   if !truthy(&images) {
-    return Ok(());
+    return Ok(None);
   }
   let mut debug_ids: Vec<(Value, Uuid)> = Vec::new();
   // iterating: a list's items, a dict's keys, a string's characters
@@ -624,6 +629,66 @@ pub(crate) fn mark_debug_ids(entries: &mut [Value], data: &Value) -> Partial {
       None => debug_ids.push((code_file, id)),
     }
   }
+  Ok(Some(debug_ids))
+}
+
+/// `get_sourcemap_images` before looking up the uploads: (file name, debug id) of each sourcemap image.
+fn sourcemap_images(data: &Value) -> Result<Vec<(String, Uuid)>, ()> {
+  sourcemap_debug_ids(data)?
+    .unwrap_or_default()
+    .into_iter()
+    .map(|(code_file, id)| {
+      // `basename()` of anything but a string fails
+      let path = code_file.as_str().ok_or(())?;
+      Ok((path.rsplit('/').next().unwrap_or(path).to_owned(), id))
+    })
+    .collect()
+}
+
+/// `get_sourcemap_images`, the event details' "Sourcemap IDs": per sourcemap image, its file name and its debug id
+/// with whether a sourcemap was uploaded for it (to the project, or before uploads were per project, to none).
+/// Empty where upstream's lookups fail (its page then fails).
+async fn sourcemaps_images(
+  pool: &bugsink_db::PgPool,
+  project_id: i64,
+  data: &Value,
+) -> sqlx::Result<Vec<(String, String)>> {
+  let Ok(images) = sourcemap_images(data) else {
+    return Ok(vec![]);
+  };
+  if images.is_empty() {
+    return Ok(vec![]);
+  }
+  let ids: Vec<Uuid> = images.iter().map(|(_, id)| *id).collect();
+  let uploaded: Vec<Uuid> = sqlx::query_scalar(
+    "SELECT debug_id FROM files_filemetadata
+         WHERE debug_id = ANY($1) AND file_type = 'source_map' AND (project_id = $2 OR project_id IS NULL)",
+  )
+  .bind(&ids)
+  .bind(project_id)
+  .fetch_all(pool)
+  .await?;
+  Ok(
+    images
+      .into_iter()
+      .map(|(name, id)| {
+        let state = if uploaded.contains(&id) {
+          " (uploaded)"
+        } else {
+          " (not uploaded)"
+        };
+        (name, format!("{} {state}", id.hyphenated()))
+      })
+      .collect(),
+  )
+}
+
+/// `apply_sourcemaps` without uploaded sourcemaps: frames of files that an image says have a sourcemap get its debug
+/// id, as a hint to upload it.
+pub(crate) fn mark_debug_ids(entries: &mut [Value], data: &Value) -> Partial {
+  let Some(debug_ids) = sourcemap_debug_ids(data)? else {
+    return Ok(());
+  };
   for entry in entries {
     let Value::Object(entry) = entry else { return Err(()) };
     let frames = match entry.get_mut("stacktrace") {

@@ -52,13 +52,13 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
   unique keys, groupings, history, first/prev/next/last within searches, event counts, sparkline counts), and how
   every stored event is shown: what upstream's own event views (stack trace, details, breadcrumbs) hand to their
   templates, for the digest events, the grouping corpus and a display corpus of odd shapes (threads, the SDK's `_meta`
-  trimming annotations incl. malformed ones, sourcemap images, log entries). Events on which upstream's view fails
-  (a 500; we show what we can) are counted, not compared.
+  trimming annotations incl. malformed ones, sourcemap images incl. uploaded ones, log entries). Events on which
+  upstream's view fails (a 500; we show what we can) are counted, not compared.
 - `admin.sh`: team, project and membership management. A scenario of ~100 steps (creating, editing and deleting teams
   and projects, joining and leaving, inviting existing and new users, member settings, answering invitations, new
   users setting their password, messaging services with test messages, signing up, confirming the address, password
-  resets, preferences and password changes, the users admin, auth tokens, counts, settings, system warnings and where
-  "home" goes, plus what must be refused and what lists show) goes through upstream's own views and through our API, on databases set up alike, once with email and once
+  resets, preferences and password changes, the users admin, auth tokens, counts, settings, system warnings (incl.
+  messages from phoning home, by version, and silencing them) and where "home" goes, plus what must be refused and what lists show) goes through upstream's own views and through our API, on databases set up alike, once with email and once
   without (invite links instead, and signing up without confirming the address). After every step the outcome (incl. each form's error messages), invite links and
   a snapshot of users, teams, projects, memberships, tokens and messaging services must agree; at the end, the
   emails (invitations, confirmations, password resets) and test messages sent.
@@ -88,20 +88,18 @@ history and comments, groupings, event navigation, sparkline counts, events show
 project and membership management (invitations by email or link, new users setting their password, messaging
 services with test messages, project deletion), accounts (signup with email confirmation, password reset,
 preferences, changing the password), the installation's admin (users, auth tokens, counts, settings, system
-warnings), upstream's REST API with auth tokens (`/api/canonical/0/`, its schema and Swagger UI), and the database
+warnings), phoning home (`PHONEHOME`) and the messages it brings back, upstream's REST API with auth tokens (`/api/canonical/0/`, its schema and Swagger UI), and the database
 bootstrap/version check. bugsink-rs can take over an upstream installation: ingestion, digestion, and upstream's UI
 as a client-side React app (`frontend/`) on the UI API.
 
 ### Not yet ported (upstream behaviour missing)
 
-In order of importance for production use (code-level gaps also have a `TODO(parity)` where they belong):
+Nothing beyond the optional extras below. Every page is ported to the frontend (see `frontend/README.md`), checked
+against the API's responses and, in a headless browser, side by side with upstream's pages on the same database.
 
-1. **Frontend**: every page is ported (see `frontend/README.md`), checked against the API's responses and, in a
-   headless browser, side by side with upstream's pages on the same database. Left out: project warnings and
-   sourcemap ids on the issue pages, and translations (the language preference is stored only).
-2. **The UI's API** is complete but for the system warnings from upstream's phone-home ("remote messages").
-3. **Background jobs** besides digest, alerts, test messages, invitation, confirmation and password reset emails,
-   and the deletion of issues and projects: phone-home.
+Phoning home sends what upstream's message has, as far as it applies to bugsink-rs: the version is the upstream
+version whose schema it runs on (2.6.3), the Python version is null, and the runtime (machine, Docker or not) is
+bugsink-rs's. `bugsink print-phonehome` prints it; `PHONEHOME=false` turns it off.
 
 ### Skipped on purpose (optional extras)
 
@@ -109,8 +107,8 @@ Not planned: an installation needs these only in particular setups, and works wi
 are marked `SKIPPED(parity)`.
 
 - **Sourcemap and debug-file uploads** (`sentry-cli`'s endpoints: `/api/0/` and its `chunk-upload`,
-  `artifactbundle/assemble`, `difs/assemble`) and applying them to stack traces, incl. the event details' list of
-  sourcemap images. Needed if CI runs `sentry-cli sourcemaps upload` or `debug-files upload`: those calls fail here
+  `artifactbundle/assemble`, `difs/assemble`) and applying them to stack traces (the event details' "Sourcemap IDs"
+  do say which were uploaded, e.g. by upstream before the switch). Needed if CI runs `sentry-cli sourcemaps upload` or `debug-files upload`: those calls fail here
   (which can fail a build step), and JavaScript stack traces stay minified (frames only get the "no sourcemap for
   debug_id" hint).
 - **Minidumps** (`/minidump/`, `event.minidump` attachments): native crash reports (C/C++, Electron, game engines)
@@ -120,11 +118,11 @@ are marked `SKIPPED(parity)`.
 - **CSP reports** (`/security/`) and **`VALIDATE_ON_DIGEST`**.
 - **`TIME_ZONE`**: dates in alert emails are UTC (the frontend shows times in the browser's zone).
 - **Translations**: upstream shows each user its pages and form messages in their language (English or Simplified
-  Chinese); the API's messages are English.
+  Chinese); the API's messages are English, and the language preference is stored only.
 - **Upstream's other management commands** (`vacuum`'s files, old-events, ingest-dir and orphaned-issues parts,
   `delete_old_events`, `cleanup_*`, `make_consistent`, `create_auth_token`, ...). Retention and eviction happen
   during digest as upstream's do. We have `migrate`, `create-project`, `create-superuser`, `send-welcome-email`,
-  `vacuum` (deleted issues, eventless issue tags, tags), `serve` and `worker`; `/health/ready` (upstream's readiness
+  `vacuum` (deleted issues, eventless issue tags, tags), `print-phonehome`, `serve` and `worker`; `/health/ready` (upstream's readiness
   probe) and `/api/v1/health` (which also checks the database).
 
 To check whether an existing installation uses the storage and uploads (all three 0: it doesn't):

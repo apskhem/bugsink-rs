@@ -10,7 +10,6 @@
 //! header (`crate::proxy`).
 //!
 //! SKIPPED(parity) (optional extras, see the README): `/minidump/` and `/security/` (CSP reports) endpoints.
-//! TODO(parity): a short-lived cache of project keys.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;

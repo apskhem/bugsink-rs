@@ -27,6 +27,10 @@ use crate::forms::{
   char_field,
   error,
 };
+use crate::phonehome::{
+  self,
+  RemotePart,
+};
 use crate::py::strip;
 use crate::quota::{
   self,
@@ -450,12 +454,31 @@ pub struct SystemWarning {
   /// More about it: the end of the message, `link_text`, links there.
   pub link: Option<&'static str>,
   pub link_text: Option<&'static str>,
-  /// Superusers can silence this one (`POST /api/v1/system-warnings/email/silence`).
+  /// Superusers can silence this one: `POST /api/v1/system-warnings/email/silence`, or for a remote message
+  /// `.../remote/{remote_message}/silence`.
   pub silenceable: bool,
+  /// A message bugsink.com answered phoning home with (`crate::phonehome`): its key, and its parts (shown separated
+  /// by spaces, those with a `url` as links); `message` is their texts so separated.
+  pub remote_message: Option<String>,
+  pub parts: Option<Vec<RemotePart>>,
 }
 
-/// `useful_settings_processor`'s `system_warnings`: email not set up (until silenced), email quotas and failures, the
-/// installation's ingest quota, and (instead of upstream's snappea) a backed up job queue.
+impl SystemWarning {
+  fn plain(message: String) -> Self {
+    Self {
+      message,
+      link: None,
+      link_text: None,
+      silenceable: false,
+      remote_message: None,
+      parts: None,
+    }
+  }
+}
+
+/// `useful_settings_processor`'s `system_warnings`: remote messages (superusers), email not set up (until silenced),
+/// email quotas and failures, the installation's ingest quota, and (instead of upstream's snappea) a backed up job
+/// queue.
 pub async fn system_warnings(
   pool: &PgPool,
   alerts: &AlertSettings,
@@ -473,14 +496,28 @@ pub async fn system_warnings(
   .fetch_one(pool)
   .await?;
 
+  if user.is_superuser {
+    for (key, parts) in phonehome::remote_warnings(pool).await? {
+      warnings.push(SystemWarning {
+        message: parts.iter().map(|p| p.text.as_str()).collect::<Vec<_>>().join(" "),
+        silenceable: true,
+        remote_message: Some(key),
+        parts: Some(parts),
+        ..SystemWarning::plain(String::new())
+      });
+    }
+  }
+
   // upstream's QuietConsoleEmailBackend: no EMAIL_BACKEND and no EMAIL_HOST
   let email = &alerts.email;
   if email.email_backend.is_none() && email.email_host.is_none() && !silenced {
     warnings.push(SystemWarning {
-      message: "Email is not set up, emails won't be sent. To get the most out of Bugsink, please set up email.".into(),
       link: Some("https://www.bugsink.com/docs/settings/#email"),
       link_text: Some("set up email"),
       silenceable: user.is_superuser,
+      ..SystemWarning::plain(
+        "Email is not set up, emails won't be sent. To get the most out of Bugsink, please set up email.".into(),
+      )
     });
   }
 
@@ -496,29 +533,19 @@ pub async fn system_warnings(
   if let Some(max) = email.max_emails_per_hour.0 {
     let n = used("per_hour", now.format("%Y-%m-%dT%H").to_string());
     if n >= max {
-      warnings.push(SystemWarning {
-        message: format!(
-          "Bugsink has sent {n} emails this hour, which is the maximum. No more emails will be sent until \
+      warnings.push(SystemWarning::plain(format!(
+        "Bugsink has sent {n} emails this hour, which is the maximum. No more emails will be sent until \
                      the next hour."
-        ),
-        link: None,
-        link_text: None,
-        silenceable: false,
-      });
+      )));
     }
   }
   if let Some(max) = email.max_emails_per_month.0 {
     let n = used("per_month", now.format("%Y-%m").to_string());
     if n >= max {
-      warnings.push(SystemWarning {
-        message: format!(
-          "Bugsink has sent {n} emails this month, which is the maximum. No more emails will be sent until \
+      warnings.push(SystemWarning::plain(format!(
+        "Bugsink has sent {n} emails this month, which is the maximum. No more emails will be sent until \
                      the 1st of next month."
-        ),
-        link: None,
-        link_text: None,
-        silenceable: false,
-      });
+      )));
     }
   }
 
@@ -542,31 +569,17 @@ pub async fn system_warnings(
     .filter(|a| !a.get("ok").and_then(Value::as_bool).unwrap_or(false))
     .count();
   if recent.len() >= 5 && failures * 2 > recent.len() {
-    warnings.push(SystemWarning {
-      message: format!(
-        "Email sending appears to be failing: {failures} of {} recent email attempts failed.",
-        recent.len()
-      ),
-      link: None,
-      link_text: None,
-      silenceable: false,
-    });
+    warnings.push(SystemWarning::plain(format!(
+      "Email sending appears to be failing: {failures} of {} recent email attempts failed.",
+      recent.len()
+    )));
   }
 
   // the installation's ingest quota
   if quota::is_still_exceeded(quotas, Scope::Installation, exceeded_until, &exceeded_reason, now)
-    && let Ok((period, n, gte)) = serde_json::from_str::<(String, i64, i64)>(&exceeded_reason)
+    && let Some(message) = quota_warning("installation", exceeded_until, &exceeded_reason)
   {
-    let per = if n != 1 { format!("{n} {period}s") } else { period };
-    let until = exceeded_until.map(django_date).unwrap_or_default();
-    warnings.push(SystemWarning {
-      message: format!(
-        "Event ingestion stopped until {until}. Reason: installation quota ({gte} events per {per}) exceeded."
-      ),
-      link: None,
-      link_text: None,
-      silenceable: false,
-    });
+    warnings.push(SystemWarning::plain(message));
   }
 
   // the job queue (upstream: snappea's): many waiting, or some waiting too long
@@ -576,17 +589,50 @@ pub async fn system_warnings(
       .await?;
   let age = oldest.map(|o| (now - o).num_seconds()).unwrap_or(0);
   if count > 300 || (count > 0 && age > 5) {
-    warnings.push(SystemWarning {
-      message: format!(
-        "{count} background jobs are waiting, the oldest for {age}s. The workers may be backlogged, not \
+    warnings.push(SystemWarning::plain(format!(
+      "{count} background jobs are waiting, the oldest for {age}s. The workers may be backlogged, not \
                  running, misconfigured or blocked."
-      ),
-      link: None,
-      link_text: None,
-      silenceable: false,
-    });
+    )));
   }
   Ok(warnings)
+}
+
+/// "Event ingestion stopped until ...", for the installation's or a project's quota.
+fn quota_warning(whose: &str, exceeded_until: Option<DateTime<Utc>>, exceeded_reason: &str) -> Option<String> {
+  let (period, n, gte) = serde_json::from_str::<(String, i64, i64)>(exceeded_reason).ok()?;
+  let per = if n != 1 { format!("{n} {period}s") } else { period };
+  let until = exceeded_until.map(django_date).unwrap_or_default();
+  Some(format!(
+    "Event ingestion stopped until {until}. Reason: {whose} quota ({gte} events per {per}) exceeded."
+  ))
+}
+
+/// `Project.get_warnings`, shown atop the project's issue list and its issues' pages: its ingest quota.
+pub async fn project_warnings(
+  pool: &PgPool,
+  quotas: &QuotaSettings,
+  project_id: i64,
+  now: DateTime<Utc>,
+) -> sqlx::Result<Vec<String>> {
+  let (exceeded_until, exceeded_reason): (Option<DateTime<Utc>>, String) =
+    sqlx::query_as("SELECT quota_exceeded_until, quota_exceeded_reason FROM projects_project WHERE id = $1")
+      .bind(project_id)
+      .fetch_one(pool)
+      .await?;
+  if !quota::is_still_exceeded(
+    quotas,
+    Scope::Project(project_id),
+    exceeded_until,
+    &exceeded_reason,
+    now,
+  ) {
+    return Ok(vec![]);
+  }
+  Ok(
+    quota_warning("project", exceeded_until, &exceeded_reason)
+      .into_iter()
+      .collect(),
+  )
 }
 
 /// Django's `date:"j M G:i T"` in UTC (upstream's Docker default `TIME_ZONE`).

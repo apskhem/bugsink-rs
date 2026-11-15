@@ -13,7 +13,7 @@ out="$(mktemp -d)"
 net=bsrs-parity pg=bsrs-parity-rest-pg port=55505 up=bsrs-parity-rest-up up_port=58105 ours_port=58106
 started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # Quotas that the steps run into; teams only by superusers (personal tokens of others are refused).
-settings=(BASE_URL=http://bugsink.test MAX_RETENTION_PER_PROJECT_EVENT_COUNT=25000 MAX_RETENTION_EVENT_COUNT=60000
+settings=(PHONEHOME=false BASE_URL=http://bugsink.test MAX_RETENTION_PER_PROJECT_EVENT_COUNT=25000 MAX_RETENTION_EVENT_COUNT=60000
           TEAM_CREATION=CB_ADMINS)
 
 docker network create "$net" >/dev/null 2>&1 || true

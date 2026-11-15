@@ -103,6 +103,15 @@ impl EmailSettings {
     }
   }
 
+  /// Django's `EMAIL_BACKEND` as upstream's Docker image sets it.
+  pub fn backend_name(&self) -> &str {
+    match (&self.email_backend, &self.email_host) {
+      (Some(backend), _) => backend,
+      (None, Some(_)) => "django.core.mail.backends.smtp.EmailBackend",
+      (None, None) => "bugsink.email_backends.QuietConsoleEmailBackend",
+    }
+  }
+
   fn delivers(&self) -> bool {
     match &self.email_backend {
       Some(backend) => backend == "django.core.mail.backends.smtp.EmailBackend",

@@ -29,7 +29,7 @@ upstream() { # step
 
 cargo build -q --release -p bugsink-server
 bugsink=./target/release/bugsink
-export DATABASE_URL="$db" BASE_URL="http://127.0.0.1:$http"
+export DATABASE_URL="$db" BASE_URL="http://127.0.0.1:$http" PHONEHOME=false
 $bugsink migrate
 echo admin-pw | $bugsink create-superuser admin@Example.COM
 

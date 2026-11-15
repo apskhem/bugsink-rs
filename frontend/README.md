@@ -40,7 +40,7 @@ each page needs; ✅ means it exists already.
 | Login / logout | `templates/bugsink/login.html`, `users/logged_out.html` | ✅ `POST /api/v1/auth/login`, `/logout`, `GET /me` |
 | Signup, confirm email, reset password | `templates/signup.html`, `users/{resend_confirmation,request_reset_password,reset_password}.html` | ✅ `GET /auth/settings` (signup allowed?, site title, `single_team`), `POST /auth/signup`, `GET/POST /auth/confirm-email/{token}`, `POST /auth/resend-confirmation`, `POST /auth/request-reset-password`, `GET/POST /auth/reset-password/{token}` |
 | Preferences, change password | `users/{preferences,change_password}.html` | ✅ `GET/PATCH /me` (`send_email_alerts`, `theme_preference`, `language`), `POST /me/password` |
-| Project header (any member) | n/a | ✅ `GET /projects/{id}/summary` (name, slug, team, releases, your role, admin?) |
+| Project header (any member) | n/a | ✅ `GET /projects/{id}/summary` (name, slug, team, releases, your role, admin?, `warnings`: the project's banners) |
 | Project list | `projects/project_list.html` | ✅ `GET /projects?tab=mine\|teams\|other` (incl. 24h sparkline), `POST /projects/{id}/join\|leave` |
 | Project new / edit / delete | `projects/project_{new,edit}.html` | ✅ `GET /projects/new` (teams, defaults), `POST /projects`, `GET/PATCH/DELETE /projects/{id}` |
 | Project members, invite, accept | `projects/project_members*.html`, `project_member_settings.html` | ✅ `/projects/{id}/members[/{user_id}[/reinvite\|/invite-link]]`, `POST /projects/{id}/accept\|decline` |
@@ -50,10 +50,10 @@ each page needs; ✅ means it exists already.
 | Accepting an invitation as a new user | `users/reset_password.html` | ✅ `POST /{teams\|projects}/{id}/members/accept-new-user` (`needs_password`), `POST /auth/reset-password/{token}` |
 | **Issue list** (open/resolved/muted/all, search, bulk actions) | `issues/issue_list.html` | ✅ `GET /projects/{id}/issues?state=&sort=&q=`, bulk ✅ `POST /projects/{id}/issues/actions` |
 | Global issue list | `issues/issue_list.html` | ✅ `GET /issues?state=&sort=`, bulk ✅ `POST /issues/actions` |
-| Issue header | `issues/base.html` | ✅ `GET /issues/{id}` (title, friendly id, releases, mute conditions), tag summary ✅ `GET /issues/{id}/tags` |
+| Issue header | `issues/base.html` | ✅ `GET /issues/{id}` (title, friendly id, releases, mute conditions, `project_warnings`), tag summary ✅ `GET /issues/{id}/tags` |
 | **Issue: event details** | `issues/event_details.html`, `_event_nav.html` | ✅ `GET /issues/{id}/events/{first,last,<digest_order>,<event id>}`, `/events/<digest_order>/{prev,next}` (all `?q=`); the event's stored `tags` |
 | Event download, JSON, Markdown (footer links) | `events/views.py` | ✅ served by the backend at upstream's `/events/event/{id}/{download,raw,md}/` (not under `/api/v1`) |
-| **Issue: stacktrace** | `issues/stacktrace.html`, `_stacktrace_frames.html` | ✅ event page `display.stacktrace` (applying uploaded sourcemaps TODO) |
+| **Issue: stacktrace** | `issues/stacktrace.html`, `_stacktrace_frames.html` | ✅ event page `display.stacktrace` (uploaded sourcemaps are not applied: skipped on purpose) |
 | Issue: breadcrumbs | `issues/breadcrumbs.html` | ✅ event page `display.breadcrumbs` |
 | Issue: event list | `issues/event_list.html` | ✅ `GET /issues/{id}/events?q=` |
 | Issue: tags | `issues/tags.html` | ✅ `GET /issues/{id}/tags?all=true` |
@@ -62,7 +62,7 @@ each page needs; ✅ means it exists already.
 | Issue actions (resolve, resolve in release, mute for/until, unmute, delete) | buttons across `issues/base.html` | ✅ `POST /issues/{id}/actions` |
 | Sparklines | `events/_event_sparkline*.html` | ✅ lists: `sparkline` (24 hourly counts); issue: `GET /issues/{id}/counts?q=` |
 | Home (`/`) | `bugsink/views.py::home` | ✅ `GET /home` (`{"go": "issues", "project_id"}`, `"projects"` or `"teams"`) |
-| System warnings (banners on every page) | `base.html` | ✅ `GET /system-warnings`, `POST /system-warnings/email/silence` |
+| System warnings (banners on every page) | `base.html` | ✅ `GET /system-warnings` (remote messages from phoning home come with `parts` and `remote_message`), `POST /system-warnings/email/silence`, `POST /system-warnings/remote/{key}/silence` |
 | Users admin | `users/user_{list,edit}.html` | ✅ `GET /users`, `PATCH/DELETE /users/{id}` (only inactive users can be deleted), `POST /users/{id}/activate\|deactivate` |
 | Auth tokens (for the REST API, `/api/canonical/0/`; its docs are at `/api/canonical/0/schema/swagger-ui/`) | `bsmain/auth_token_{list,create}.html` | ✅ `GET /auth-tokens`, `GET /auth-tokens/new` (capabilities, projects), `POST /auth-tokens`, `DELETE /auth-tokens/{id}` (revoke) |
 | Settings, counts | `templates/bugsink/{settings,counts}.html` | ✅ `GET /settings`, `GET /counts` (superusers) |
@@ -100,6 +100,8 @@ highlighting of code context, formatting variables and dates):
 - `key_info`, `logentry_info`, `deployment_info`: label/value pairs of the details tab, upstream's labels and order;
   `contexts` incl. browser and OS derived from the User-Agent; `request_repr`: "METHOD url".
 - `breadcrumbs`: the list, or null.
+- `sourcemaps_images`: the details tab's "Sourcemap IDs", (file name, "<debug id>  (uploaded)" or "... (not
+  uploaded)").
 
 Management: forms answer 400 with `errors` by field and Django's messages (`team`, `name`, `visibility`,
 `retention_max_event_count`, `grouping_mechanism`, `email`, `role`, `password`, `display_name`, `kind`, and a
