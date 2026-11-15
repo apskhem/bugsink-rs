@@ -1,6 +1,7 @@
 {
   "name": "bugsink-frontend",
   "private": true,
+  "license": "PolyForm-Shield-1.0.0",
   "type": "module",
   "description": "The client-side-rendered UI of bugsink-rs: upstream Bugsink's pages, on the /api/v1 JSON API.",
   "scripts": {

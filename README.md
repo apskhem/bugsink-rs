@@ -4,6 +4,8 @@ A private Rust rewrite of the [Bugsink](https://github.com/bugsink/bugsink) back
 tracking on Postgres, serving a separately built client-side-rendered frontend.
 
 Private because upstream's license (PolyForm Shield 1.0.0) forbids providing a product that competes with Bugsink.
+Being a port of Bugsink, bugsink-rs is under that same license (`LICENSE`); parts from third parties are listed in
+`THIRD-PARTY-NOTICES.md`.
 
 ## Drop-in compatibility
 

@@ -31,6 +31,7 @@ FROM scratch
 COPY --from=backend /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=backend /bugsink /bugsink
 COPY --from=frontend /src/frontend/dist /frontend
+COPY LICENSE THIRD-PARTY-NOTICES.md /
 ENV BUGSINK_BIND=0.0.0.0:8000 \
     BUGSINK_STATIC_DIR=/frontend \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
