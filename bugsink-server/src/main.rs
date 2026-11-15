@@ -10,6 +10,10 @@ use tokio::sync::watch;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
+// musl's allocator (the static binary's) serializes under many threads; mimalloc doesn't.
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Parser)]
 #[command(name = "bugsink", about = "Self-hosted error tracking (Rust rewrite of Bugsink)")]
 struct Cli {

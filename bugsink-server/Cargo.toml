@@ -22,6 +22,7 @@ fancy-regex.workspace = true
 flate2.workspace = true
 hmac.workspace = true
 lettre.workspace = true
+mimalloc.workspace = true
 rand.workspace = true
 regex.workspace = true
 reqwest.workspace = true

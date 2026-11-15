@@ -23,6 +23,7 @@ fancy-regex = "0.14"
 flate2 = "1"
 hmac = "0.12"
 lettre = { version = "0.11", default-features = false, features = ["builder", "smtp-transport", "tokio1", "tokio1-rustls", "ring", "webpki-roots", "hostname"] }
+mimalloc = "0.1"
 rand = "0.9"
 regex = "1"
 reqwest = { version = "0.13", default-features = false, features = ["rustls"] }
@@ -46,3 +47,10 @@ uuid = { version = "1", features = ["v4", "serde"] }
 opt-level = 3
 [profile.dev.package.hmac]
 opt-level = 3
+
+# The shipped binary: whole-program optimization, at the cost of a slower build.
+# Panics keep unwinding: axum and tokio contain a handler's panic to its request.
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
