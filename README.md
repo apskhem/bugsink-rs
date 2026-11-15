@@ -2,7 +2,7 @@
 
 A private Rust rewrite of [Bugsink](https://github.com/bugsink/bugsink): Sentry-SDK-compatible error tracking on
 Postgres, with upstream's pages as a client-side React app. A drop-in for a Postgres-backed Bugsink 2.6.3 installation.
-The current release is 2.6.0; see `CHANGELOG.md`.
+The current release is 2.6.1; see `CHANGELOG.md`.
 
 Private because upstream's license (PolyForm Shield 1.0.0) forbids providing a product that competes with Bugsink.
 Being a port of Bugsink, bugsink-rs is under that same license (`LICENSE`); parts from third parties are listed in

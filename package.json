@@ -1,6 +1,6 @@
 {
   "name": "bugsink-rs",
-  "version": "2.6.0",
+  "version": "2.6.1",
   "private": true,
   "description": "A private Rust rewrite of the Bugsink backend (https://github.com/bugsink/bugsink): Sentry-SDK-compatible error tracking on Postgres, serving a separately built client-side-rendered frontend.",
   "author": "Apisit Ritruengroj <apisit_lon@hotmail.com>",

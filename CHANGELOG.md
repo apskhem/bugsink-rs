@@ -3,7 +3,7 @@
 Versions follow the upstream Bugsink line that bugsink-rs is a drop-in for: `MAJOR.MINOR` is upstream's, the patch
 number counts bugsink-rs's own releases (see "Versions" in the README).
 
-## Unreleased
+## 2.6.1 (2026-11-15)
 
 - A database that upstream installed before it squashed its early migrations, then upgraded to 2.6.3, is no longer
   refused as "migrated by a newer Bugsink": the `django_migrations` rows of those squashed-away migrations are
