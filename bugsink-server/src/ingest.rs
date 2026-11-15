@@ -172,7 +172,7 @@ struct Request {
   project_id: i64,
   key_from_request: Option<Uuid>,
   remote_addr: Option<String>,
-  body: Vec<u8>,
+  body: Bytes,
 }
 
 impl Request {

@@ -41,6 +41,13 @@ pub async fn connect(database_url: &str, max_connections: u32) -> Result<PgPool,
   PgPoolOptions::new()
     .max_connections(max_connections)
     .acquire_timeout(Duration::from_secs(10))
+    // sqlx never shrinks a connection's buffers by itself: each would keep the size of the largest event it carried.
+    .after_release(|conn, _| {
+      Box::pin(async move {
+        sqlx::Connection::shrink_buffers(conn);
+        Ok(true)
+      })
+    })
     .connect(database_url)
     .await
 }

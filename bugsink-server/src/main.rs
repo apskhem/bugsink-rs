@@ -28,9 +28,8 @@ use tower_http::services::{
 };
 use tower_http::trace::TraceLayer;
 
-// musl's allocator (the static binary's) serializes under many threads; mimalloc doesn't.
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+// The platform's allocator (musl's, in the static binary): digestion is bound by Postgres, not allocation, and it
+// returns freed memory to the OS. mimalloc made small-event ingest ~1.5x faster, but held 3-7x the memory.
 
 #[derive(Parser)]
 #[command(name = "bugsink", about = "Self-hosted error tracking (Rust rewrite of Bugsink)")]

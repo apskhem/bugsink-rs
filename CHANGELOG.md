@@ -19,6 +19,13 @@ number counts bugsink-rs's own releases (see "Versions" in the README).
   is passed on to digest as it was sent instead of being parsed into a tree and serialized again (it is still
   validated the same way). Locally: ~40% more requests/s; for ~400 KB events, about a third of the CPU and half the
   peak memory.
+- Much less memory: the static binary uses musl's allocator instead of mimalloc, which kept most of the memory it
+  ever used. Measured in the Docker image: idle 25 -> 7 MB; under small events 73 -> 20 MB at peak; under ~400 KB
+  events 283 -> 51 MB at peak and 197 -> 27 MB afterwards. Digestion, bound by Postgres, is as fast; ingest of small
+  events peaks ~1/3 lower (~7,700 instead of ~11,500 requests/s locally), still far above what digestion keeps up
+  with. Also: database connections no longer keep buffers the size of the largest event they carried, an
+  uncompressed request body is no longer copied, and a job is no longer parsed into a JSON tree before its own
+  type.
 
 ## 2.6.1 (2026-11-15)
 

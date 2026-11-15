@@ -2,6 +2,8 @@
 
 use std::io::Read;
 
+use bytes::Bytes;
+
 #[derive(Debug, thiserror::Error)]
 pub enum DecodeError {
   #[error("unsupported content-encoding: {0}")]
@@ -14,25 +16,28 @@ pub enum DecodeError {
 
 /// Decodes `body` according to `content_encoding`, refusing to produce more than `max_len` bytes.
 ///
-/// "deflate" means zlib-wrapped deflate, as sent by the Sentry SDKs.
-pub fn decode(body: &[u8], content_encoding: Option<&str>, max_len: usize) -> Result<Vec<u8>, DecodeError> {
+/// "deflate" means zlib-wrapped deflate, as sent by the Sentry SDKs. An uncompressed body is returned as is, not
+/// copied.
+pub fn decode(body: &Bytes, content_encoding: Option<&str>, max_len: usize) -> Result<Bytes, DecodeError> {
   let encoding = content_encoding.map(str::trim).unwrap_or("").to_ascii_lowercase();
+  let compressed = &body[..];
   match encoding.as_str() {
-    "" | "identity" => limited(body, max_len),
-    "gzip" => limited(flate2::read::GzDecoder::new(body), max_len),
-    "deflate" => limited(flate2::read::ZlibDecoder::new(body), max_len),
-    "br" => limited(brotli::Decompressor::new(body, 8 * 1024), max_len),
+    "" | "identity" if body.len() > max_len => Err(DecodeError::TooLarge(max_len)),
+    "" | "identity" => Ok(body.clone()),
+    "gzip" => limited(flate2::read::GzDecoder::new(compressed), max_len),
+    "deflate" => limited(flate2::read::ZlibDecoder::new(compressed), max_len),
+    "br" => limited(brotli::Decompressor::new(compressed, 8 * 1024), max_len),
     other => Err(DecodeError::Unsupported(other.to_string())),
   }
 }
 
-fn limited(reader: impl Read, max_len: usize) -> Result<Vec<u8>, DecodeError> {
+fn limited(reader: impl Read, max_len: usize) -> Result<Bytes, DecodeError> {
   let mut out = Vec::new();
   reader.take(max_len as u64 + 1).read_to_end(&mut out)?;
   if out.len() > max_len {
     return Err(DecodeError::TooLarge(max_len));
   }
-  Ok(out)
+  Ok(out.into())
 }
 
 #[cfg(test)]
@@ -47,6 +52,7 @@ mod tests {
     enc.write_all(&[b'a'; 1000]).unwrap();
     let gz = enc.finish().unwrap();
 
+    let gz = Bytes::from(gz);
     assert_eq!(decode(&gz, Some("gzip"), 1000).unwrap().len(), 1000);
     assert!(matches!(
       decode(&gz, Some("gzip"), 999),
@@ -57,7 +63,7 @@ mod tests {
   #[test]
   fn rejects_unknown_encoding() {
     assert!(matches!(
-      decode(b"x", Some("zstd"), 10),
+      decode(&Bytes::from_static(b"x"), Some("zstd"), 10),
       Err(DecodeError::Unsupported(_))
     ));
   }

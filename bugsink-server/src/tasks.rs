@@ -16,7 +16,6 @@ use std::time::Duration;
 use bugsink_db::PgPool;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
-use serde_json::Value;
 use sqlx::postgres::PgListener;
 use sqlx::{
   PgExecutor,
@@ -51,7 +50,7 @@ pub async fn enqueue_as<'e, J: Job>(executor: impl PgExecutor<'e>, payload: &imp
   Ok(())
 }
 
-type Handler = Arc<dyn Fn(PgPool, Value) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
+type Handler = Arc<dyn Fn(PgPool, String) -> Pin<Box<dyn Future<Output = anyhow::Result<()>> + Send>> + Send + Sync>;
 
 #[derive(Clone, Default)]
 pub struct Registry {
@@ -81,7 +80,7 @@ impl Registry {
       J::KIND,
       Arc::new(move |pool, payload| {
         let (handler, state) = (handler.clone(), state.clone());
-        Box::pin(async move { handler(pool, serde_json::from_value(payload)?, state).await })
+        Box::pin(async move { handler(pool, serde_json::from_str(&payload)?, state).await })
       }),
     );
     self
@@ -91,7 +90,8 @@ impl Registry {
 struct Claimed {
   id: i64,
   kind: String,
-  payload: Value,
+  /// The JSON text: a job is deserialized from it directly, not through a `Value` (an event can be megabytes).
+  payload: String,
   attempts: i32,
 }
 
@@ -167,7 +167,7 @@ async fn claim(pool: &PgPool) -> sqlx::Result<Option<Claimed>> {
              ORDER BY run_at, id
              FOR UPDATE SKIP LOCKED
              LIMIT 1)
-         RETURNING id, kind, payload, attempts",
+         RETURNING id, kind, payload::text, attempts",
   )
   .fetch_optional(pool)
   .await?;
@@ -175,7 +175,7 @@ async fn claim(pool: &PgPool) -> sqlx::Result<Option<Claimed>> {
     Claimed {
       id: r.get("id"),
       kind: r.get("kind"),
-      payload: r.get::<sqlx::types::Json<Value>, _>("payload").0,
+      payload: r.get("payload"),
       attempts: r.get("attempts"),
     }
   }))
