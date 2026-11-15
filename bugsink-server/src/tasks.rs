@@ -34,12 +34,17 @@ pub trait Job: Serialize + DeserializeOwned + Send + 'static {
 }
 
 pub async fn enqueue<'e, J: Job>(executor: impl PgExecutor<'e>, job: &J) -> anyhow::Result<()> {
+  enqueue_as::<J>(executor, job).await
+}
+
+/// A `J` job from a payload that serializes as one: e.g. borrowing what `J` owns, to skip building it.
+pub async fn enqueue_as<'e, J: Job>(executor: impl PgExecutor<'e>, payload: &impl Serialize) -> anyhow::Result<()> {
   sqlx::query(
     "WITH new_job AS (INSERT INTO bsrs_job (kind, payload) VALUES ($1, $2::json) RETURNING id)
          SELECT pg_notify($3, '') FROM new_job",
   )
   .bind(J::KIND)
-  .bind(serde_json::to_string(job)?)
+  .bind(serde_json::to_string(payload)?)
   .bind(CHANNEL)
   .execute(executor)
   .await?;

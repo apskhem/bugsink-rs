@@ -9,7 +9,6 @@
 //! Counting is `crate::event_counter`'s.
 
 use bugsink_db::{
-  PgPool,
   Postgres,
   Transaction,
 };
@@ -19,6 +18,7 @@ use chrono::{
 };
 use serde_json::json;
 use sqlx::Row;
+use sqlx::postgres::PgRow;
 use uuid::Uuid;
 
 use crate::event_counter::{
@@ -160,13 +160,34 @@ pub fn is_still_exceeded(
   !current.is_some_and(|t| t.gte > gte)
 }
 
-/// For ingest: the installation's quota, read without locking (upstream: `Installation.objects.get()`).
-pub async fn installation_exceeded(pool: &PgPool, settings: &QuotaSettings, now: DateTime<Utc>) -> sqlx::Result<bool> {
-  let row: Option<(Option<DateTime<Utc>>, String)> =
-    sqlx::query_as("SELECT quota_exceeded_until, quota_exceeded_reason FROM phonehome_installation LIMIT 1")
-      .fetch_optional(pool)
-      .await?;
-  Ok(row.is_some_and(|(until, reason)| is_still_exceeded(settings, Scope::Installation, until, &reason, now)))
+/// What [`count_installation_periods_and_act_on_it`] reads, which digest reads in one query with what else it needs
+/// first (see [`Installation::COLUMNS`]).
+pub(crate) struct Installation {
+  id: Uuid,
+  quota: QuotaState,
+  /// The sum over projects, before this event.
+  digested_event_count: i64,
+}
+
+impl Installation {
+  /// Select-list items, against `phonehome_installation i` (left-joined: it may have no row).
+  pub const COLUMNS: &str = "i.id AS installation_id, i.next_quota_check AS installation_next_quota_check,
+         i.quota_exceeded_until AS installation_quota_exceeded_until,
+         i.quota_exceeded_reason AS installation_quota_exceeded_reason,
+         (SELECT COALESCE(SUM(digested_event_count), 0)::bigint FROM projects_project)
+             AS installation_digested_event_count";
+
+  pub fn from_row(row: &PgRow) -> Option<Self> {
+    Some(Self {
+      id: row.get::<Option<Uuid>, _>("installation_id")?,
+      quota: QuotaState {
+        next_quota_check: row.get("installation_next_quota_check"),
+        exceeded_until: row.get("installation_quota_exceeded_until"),
+        exceeded_reason: row.get("installation_quota_exceeded_reason"),
+      },
+      digested_event_count: row.get("installation_digested_event_count"),
+    })
+  }
 }
 
 /// `count_installation_periods_and_act_on_it`: false if the event must be dropped. Called before the project's own
@@ -174,35 +195,25 @@ pub async fn installation_exceeded(pool: &PgPool, settings: &QuotaSettings, now:
 pub(crate) async fn count_installation_periods_and_act_on_it(
   tx: &mut Transaction<'_, Postgres>,
   settings: &QuotaSettings,
+  installation: Option<Installation>,
   now: DateTime<Utc>,
 ) -> sqlx::Result<bool> {
-  let Some(row) = sqlx::query(
-    "SELECT id, next_quota_check, quota_exceeded_until, quota_exceeded_reason FROM phonehome_installation LIMIT 1",
-  )
-  .fetch_optional(&mut **tx)
-  .await?
+  let Some(Installation {
+    id,
+    quota,
+    digested_event_count,
+  }) = installation
   else {
     return Ok(true);
   };
-  let id: Uuid = row.get("id");
-  let next_quota_check = i64::from(row.get::<i32, _>("next_quota_check"));
+  let next_quota_check = i64::from(quota.next_quota_check);
   let scope = Scope::Installation;
-  if is_still_exceeded(
-    settings,
-    scope,
-    row.get("quota_exceeded_until"),
-    row.get("quota_exceeded_reason"),
-    now,
-  ) {
+  if is_still_exceeded(settings, scope, quota.exceeded_until, &quota.exceeded_reason, now) {
     return Ok(false);
   }
 
   // No per-event bookkeeping on the installation row (that would serialize all digestion): the count is the sum over
   // projects, +1 for the event about to be added.
-  let digested_event_count: i64 =
-    sqlx::query_scalar("SELECT COALESCE(SUM(digested_event_count), 0)::bigint FROM projects_project")
-      .fetch_one(&mut **tx)
-      .await?;
   let digested_event_count = digested_event_count + 1;
 
   let thresholds = settings.thresholds(scope);

@@ -179,20 +179,26 @@ pub async fn digest(
     }
     return Ok(());
   }
-  // Upstream relies on the (project, event_id) unique constraint and rolls back; checking first is equivalent.
-  let duplicate: bool =
-    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM events_event WHERE project_id = $1 AND event_id = $2)")
-      .bind(project.id)
-      .bind(job.event_id)
-      .fetch_one(&mut *tx)
-      .await?;
-  if duplicate {
+  // Upstream relies on the (project, event_id) unique constraint and rolls back; checking first is equivalent. Read
+  // with what the installation's quota needs, in one query, after the lock (so seeing what the previous holder wrote).
+  let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+    "SELECT EXISTS (SELECT 1 FROM events_event WHERE project_id = $1 AND event_id = $2) AS duplicate, {}
+         FROM (VALUES (1)) AS one (x)
+         LEFT JOIN LATERAL (SELECT * FROM phonehome_installation LIMIT 1) i ON true",
+    quota::Installation::COLUMNS
+  )))
+  .bind(project.id)
+  .bind(job.event_id)
+  .fetch_one(&mut *tx)
+  .await?;
+  if row.get::<bool, _>("duplicate") {
     return Ok(());
   }
 
   // Installation first, then the project (whose count this increments). Over quota, the event is dropped but the
   // bookkeeping is kept.
-  if !quota::count_installation_periods_and_act_on_it(&mut tx, quotas, digested_at).await?
+  let installation = quota::Installation::from_row(&row);
+  if !quota::count_installation_periods_and_act_on_it(&mut tx, quotas, installation, digested_at).await?
     || !quota::count_project_periods_and_act_on_it(
       &mut tx,
       quotas,
@@ -361,7 +367,7 @@ pub async fn digest(
 
   tags::digest_tags(&mut tx, data, &event, issue.id).await?;
 
-  // Last: it locks the installation's row for the hour, which every project's digestion updates, until the commit.
+  // Last: see there.
   counts::record_event_counts(&mut tx, project.id, issue.id, digested_at, event.digest_order).await?;
 
   tx.commit().await?;
