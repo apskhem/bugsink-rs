@@ -1,9 +1,23 @@
 {
   "name": "bugsink-frontend",
+  "version": "2.6.0",
   "private": true,
-  "license": "PolyForm-Shield-1.0.0",
-  "type": "module",
   "description": "The client-side-rendered UI of bugsink-rs: upstream Bugsink's pages, on the /api/v1 JSON API.",
+  "author": "Apisit Ritruengroj <apisit_lon@hotmail.com>",
+  "license": "PolyForm-Shield-1.0.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/apskhem/bugsink-rs.git",
+    "directory": "frontend"
+  },
+  "bugs": {
+    "url": "https://github.com/apskhem/bugsink-rs/issues"
+  },
+  "homepage": "https://github.com/apskhem/bugsink-rs/tree/main/frontend#readme",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

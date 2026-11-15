@@ -7,6 +7,13 @@ Private because upstream's license (PolyForm Shield 1.0.0) forbids providing a p
 Being a port of Bugsink, bugsink-rs is under that same license (`LICENSE`); parts from third parties are listed in
 `THIRD-PARTY-NOTICES.md`.
 
+## Versions
+
+`MAJOR.MINOR` follow the upstream Bugsink release line that bugsink-rs is a drop-in for (2.6: upstream 2.6, whose
+schema it is pinned to at 2.6.3). The patch number counts bugsink-rs's own releases within that line (fixes to the Rust
+backend or the React frontend), so it doesn't match upstream's: bugsink-rs 2.6.0 goes with upstream 2.6.3. The version
+is set in `Cargo.toml`, `package.json` and `frontend/package.json`, and is the same in all three.
+
 ## Drop-in compatibility
 
 bugsink-rs reads and writes **upstream Bugsink's own Postgres schema**, pinned to **Bugsink 2.6.3**:

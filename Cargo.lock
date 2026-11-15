@@ -287,7 +287,7 @@ dependencies = [
 
 [[package]]
 name = "bugsink-db"
-version = "0.1.0"
+version = "2.6.0"
 dependencies = [
  "sqlx",
  "thiserror",
@@ -296,7 +296,7 @@ dependencies = [
 
 [[package]]
 name = "bugsink-server"
-version = "0.1.0"
+version = "2.6.0"
 dependencies = [
  "anyhow",
  "axum",

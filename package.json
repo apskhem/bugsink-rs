@@ -1,8 +1,21 @@
 {
   "name": "bugsink-rs",
+  "version": "2.6.0",
   "private": true,
+  "description": "A private Rust rewrite of the Bugsink backend (https://github.com/bugsink/bugsink): Sentry-SDK-compatible error tracking on Postgres, serving a separately built client-side-rendered frontend.",
+  "author": "Apisit Ritruengroj <apisit_lon@hotmail.com>",
   "license": "PolyForm-Shield-1.0.0",
-  "description": "A private Rust rewrite of the [Bugsink](https://github.com/bugsink/bugsink) backend: Sentry-SDK-compatible error tracking on Postgres, serving a separately built client-side-rendered frontend.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/apskhem/bugsink-rs.git"
+  },
+  "bugs": {
+    "url": "https://github.com/apskhem/bugsink-rs/issues"
+  },
+  "homepage": "https://github.com/apskhem/bugsink-rs#readme",
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "workspaces": [
     "frontend"
   ],
@@ -12,13 +25,5 @@
     "check": "npm run check -w frontend",
     "lint": "npm run lint -w frontend",
     "fmt": "npm run fmt -w frontend"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/apskhem/bugsink-rs.git"
-  },
-  "bugs": {
-    "url": "https://github.com/apskhem/bugsink-rs/issues"
-  },
-  "homepage": "https://github.com/apskhem/bugsink-rs#readme"
+  }
 }

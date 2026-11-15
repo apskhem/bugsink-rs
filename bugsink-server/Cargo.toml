@@ -3,8 +3,13 @@ name = "bugsink-server"
 description = "The `bugsink` binary and everything behind it: ingest, digest, grouping, jobs, UI API, static frontend."
 version.workspace = true
 edition.workspace = true
-publish.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
 license.workspace = true
+publish.workspace = true
 
 [[bin]]
 name = "bugsink"

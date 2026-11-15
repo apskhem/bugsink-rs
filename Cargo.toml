@@ -3,10 +3,18 @@ resolver = "3"
 members = ["bugsink-*"]
 
 [workspace.package]
-version = "0.1.0"
+# MAJOR.MINOR: the upstream Bugsink line (2.6.x, schema 2.6.3); patch: our own fixes. Keep package.json and
+# frontend/package.json in step.
+version = "2.6.0"
 edition = "2024"
-publish = false
+# sqlx 0.9 needs 1.94
+rust-version = "1.94"
+authors = ["Apisit Ritruengroj <apisit_lon@hotmail.com>"]
+repository = "https://github.com/apskhem/bugsink-rs"
+homepage = "https://github.com/apskhem/bugsink-rs"
+readme = "README.md"
 license = "PolyForm-Shield-1.0.0"
+publish = false
 
 [workspace.dependencies]
 # internal
