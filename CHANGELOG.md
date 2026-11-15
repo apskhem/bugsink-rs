@@ -9,6 +9,11 @@ number counts bugsink-rs's own releases (see "Versions" in the README).
   it, for the ~1,300 compiled regexes of upstream's parser data. A regex is now only compiled for user agents that
   contain the text it requires; common browsers need a few dozen, and parsing is ~4x faster. The results are
   unchanged.
+- Faster digestion: an event's tags are stored in 3 statements instead of 5 per tag, and the installation-wide
+  hourly event count, which every project's digestion updates, is now updated last, so it no longer makes
+  digestion in different projects wait for each other. In a local benchmark (browser events with 17 tags), one
+  project went from ~78 to ~260 events/s, four projects together from ~86 to ~600. Tag keys and values that already
+  exist are no longer rewritten on every event.
 
 ## 2.6.1 (2026-11-15)
 

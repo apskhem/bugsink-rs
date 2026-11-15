@@ -286,8 +286,6 @@ pub async fn digest(
   )
   .await?;
 
-  counts::record_event_counts(&mut tx, project.id, issue.id, digested_at, event.digest_order).await?;
-
   let (release_version, _) = releases::create_release_if_needed(
     &mut tx,
     project.id,
@@ -362,6 +360,9 @@ pub async fn digest(
   save_issue(&mut tx, &issue).await?;
 
   tags::digest_tags(&mut tx, data, &event, issue.id).await?;
+
+  // Last: it locks the installation's row for the hour, which every project's digestion updates, until the commit.
+  counts::record_event_counts(&mut tx, project.id, issue.id, digested_at, event.digest_order).await?;
 
   tx.commit().await?;
   Ok(())

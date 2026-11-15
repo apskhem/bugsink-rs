@@ -146,52 +146,63 @@ pub(crate) async fn digest_tags(
     tags.truncate(MAX_EVENT_TAGS);
   }
 
-  for (key, value) in tags {
-    let key_id: i64 = sqlx::query_scalar(
-      "INSERT INTO tags_tagkey (project_id, key, mostly_unique) VALUES ($1, $2, $3)
-             ON CONFLICT (project_id, key) DO UPDATE SET mostly_unique = EXCLUDED.mostly_unique RETURNING id",
-    )
-    .bind(event.project_id)
-    .bind(&key)
-    .bind(is_mostly_unique(&key))
-    .fetch_one(&mut **tx)
-    .await?;
-    let value_id: i64 = sqlx::query_scalar(
-      "INSERT INTO tags_tagvalue (project_id, key_id, value) VALUES ($1, $2, $3)
-             ON CONFLICT (key_id, value) DO UPDATE SET project_id = EXCLUDED.project_id RETURNING id",
-    )
-    .bind(event.project_id)
-    .bind(key_id)
-    .bind(&value)
-    .fetch_one(&mut **tx)
-    .await?;
-    sqlx::query(
-      "INSERT INTO tags_eventtag (project_id, value_id, event_id, issue_id, digest_order) VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (value_id, event_id) DO NOTHING",
-    )
-    .bind(event.project_id)
-    .bind(value_id)
-    .bind(event.id)
-    .bind(issue_id)
-    .bind(event.digest_order)
-    .execute(&mut **tx)
-    .await?;
-    sqlx::query(
-      "INSERT INTO tags_issuetag (project_id, key_id, value_id, issue_id, count) VALUES ($1, $2, $3, $4, 0)
-             ON CONFLICT (value_id, issue_id) DO NOTHING",
-    )
-    .bind(event.project_id)
-    .bind(key_id)
-    .bind(value_id)
-    .bind(issue_id)
-    .execute(&mut **tx)
-    .await?;
-    sqlx::query("UPDATE tags_issuetag SET count = count + 1 WHERE value_id = $1 AND issue_id = $2")
-      .bind(value_id)
-      .bind(issue_id)
-      .execute(&mut **tx)
-      .await?;
+  if tags.is_empty() {
+    return Ok(());
   }
+
+  // All tags in three statements (not a few per tag: digestion holds the project's lock, so round trips are its
+  // throughput). Each statement sees the rows the ones before it wrote; rows are inserted in the tags' order. Existing
+  // keys and values are only rewritten when the conflicting row differs.
+  let (keys, values): (Vec<String>, Vec<String>) = tags.into_iter().unzip();
+  let mostly_unique: Vec<bool> = keys.iter().map(|k| is_mostly_unique(k)).collect();
+  sqlx::query(
+    "INSERT INTO tags_tagkey (project_id, key, mostly_unique)
+         SELECT $1, t.key, t.mostly_unique FROM unnest($2::text[], $3::bool[]) WITH ORDINALITY AS t(key, mostly_unique, n)
+         ORDER BY t.n
+         ON CONFLICT (project_id, key) DO UPDATE SET mostly_unique = EXCLUDED.mostly_unique
+         WHERE tags_tagkey.mostly_unique IS DISTINCT FROM EXCLUDED.mostly_unique",
+  )
+  .bind(event.project_id)
+  .bind(&keys)
+  .bind(&mostly_unique)
+  .execute(&mut **tx)
+  .await?;
+  sqlx::query(
+    "INSERT INTO tags_tagvalue (project_id, key_id, value)
+         SELECT $1, k.id, t.value FROM unnest($2::text[], $3::text[]) WITH ORDINALITY AS t(key, value, n)
+         JOIN tags_tagkey k ON k.project_id = $1 AND k.key = t.key
+         ORDER BY t.n
+         ON CONFLICT (key_id, value) DO UPDATE SET project_id = EXCLUDED.project_id
+         WHERE tags_tagvalue.project_id IS DISTINCT FROM EXCLUDED.project_id",
+  )
+  .bind(event.project_id)
+  .bind(&keys)
+  .bind(&values)
+  .execute(&mut **tx)
+  .await?;
+  sqlx::query(
+    "WITH tagged AS (
+             SELECT t.n, k.id AS key_id, v.id AS value_id
+             FROM unnest($2::text[], $3::text[]) WITH ORDINALITY AS t(key, value, n)
+             JOIN tags_tagkey k ON k.project_id = $1 AND k.key = t.key
+             JOIN tags_tagvalue v ON v.key_id = k.id AND v.value = t.value
+         ), event_tags AS (
+             INSERT INTO tags_eventtag (project_id, value_id, event_id, issue_id, digest_order)
+             SELECT $1, value_id, $4, $5, $6 FROM tagged ORDER BY n
+             ON CONFLICT (value_id, event_id) DO NOTHING
+         )
+         INSERT INTO tags_issuetag (project_id, key_id, value_id, issue_id, count)
+         SELECT $1, key_id, value_id, $5, 1 FROM tagged ORDER BY n
+         ON CONFLICT (value_id, issue_id) DO UPDATE SET count = tags_issuetag.count + 1",
+  )
+  .bind(event.project_id)
+  .bind(&keys)
+  .bind(&values)
+  .bind(event.id)
+  .bind(issue_id)
+  .bind(event.digest_order)
+  .execute(&mut **tx)
+  .await?;
   Ok(())
 }
 
