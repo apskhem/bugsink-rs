@@ -1,7 +1,8 @@
 # bugsink-rs
 
-A private Rust rewrite of the [Bugsink](https://github.com/bugsink/bugsink) backend: Sentry-SDK-compatible error
-tracking on Postgres, serving a separately built client-side-rendered frontend.
+A private Rust rewrite of [Bugsink](https://github.com/bugsink/bugsink): Sentry-SDK-compatible error tracking on
+Postgres, with upstream's pages as a client-side React app. A drop-in for a Postgres-backed Bugsink 2.6.3 installation.
+The current release is 2.6.0; see `CHANGELOG.md`.
 
 Private because upstream's license (PolyForm Shield 1.0.0) forbids providing a product that competes with Bugsink.
 Being a port of Bugsink, bugsink-rs is under that same license (`LICENSE`); parts from third parties are listed in
@@ -11,8 +12,14 @@ Being a port of Bugsink, bugsink-rs is under that same license (`LICENSE`); part
 
 `MAJOR.MINOR` follow the upstream Bugsink release line that bugsink-rs is a drop-in for (2.6: upstream 2.6, whose
 schema it is pinned to at 2.6.3). The patch number counts bugsink-rs's own releases within that line (fixes to the Rust
-backend or the React frontend), so it doesn't match upstream's: bugsink-rs 2.6.0 goes with upstream 2.6.3. The version
-is set in `Cargo.toml`, `package.json` and `frontend/package.json`, and is the same in all three.
+backend or the React frontend), so it doesn't match upstream's: bugsink-rs 2.6.0 goes with upstream 2.6.3.
+
+To release:
+
+1. Set the version in `Cargo.toml`, `package.json` and `frontend/package.json` (the same in all three), then update
+   the lockfiles: `cargo build` and `npm install --package-lock-only`.
+2. Add the release's notes at the top of `CHANGELOG.md`.
+3. Commit, tag it `v<version>` (annotated) and push the tag; paste the notes into the GitHub release for that tag.
 
 ## Drop-in compatibility
 
@@ -28,19 +35,21 @@ bugsink-rs reads and writes **upstream Bugsink's own Postgres schema**, pinned t
 - On startup the database's `django_migrations` are checked against 2.6.3: a database that is behind is refused (upgrade
   it with upstream first), as is one migrated by a newer upstream unless `--allow-newer-upstream-schema` is given.
 
-Not covered: SQLite- or MySQL-backed upstream installs (migrate the data to Postgres first). Upstream's file-based event
-storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
+Not covered: SQLite- or MySQL-backed upstream installs (migrate the data to Postgres first), and upstream's file-based
+event storage (skipped on purpose, see below).
 
 ### What is verified against upstream
 
-`tools/parity/` runs the official `bugsink/bugsink:2.6.3` image next to bugsink-rs (needs docker):
+`tools/parity/` runs the official `bugsink/bugsink:2.6.3` image next to bugsink-rs (needs docker; bugsink-rs runs with
+`PHONEHOME=false` there):
 
 - `grouping.sh`: grouping keys, issue titles and denormalized fields for ~400 edge-case events, compared with
   upstream's own functions. Grouping keys must match byte-for-byte, or new events would open duplicate issues.
 - `digest.sh`: a scripted sequence of ~200 events, interleaved with issue actions that each side applies with its own
   code (resolve, also by next release and in a release; reopen; mute, also for a time and until a volume of events;
   unmute; delete, incl. the background deletion of the issue's rows; on single issues and in bulk), with vacuuming
-  (`vacuum`: deleted issues, eventless issue tags, unused tag values and keys) and with settings changes (grouping-mechanism upgrade, retention changes that force eviction incl. of `never_evict` events and zero
+  (`vacuum`: deleted issues, eventless issue tags, unused tag values and keys) and with settings changes
+  (grouping-mechanism upgrade, retention changes that force eviction incl. of `never_evict` events and zero
   retention), digested four ways: upstream only, bugsink-rs only, bugsink-rs then upstream on the same database, and
   upstream then bugsink-rs. The four databases are compared row by row, and so is every alert sent along the way: emails
   (by the members' notification preferences) and messaging webhooks go to a capture server (`capture.py`) and must be
@@ -63,14 +72,16 @@ storage (`FILE_EVENT_STORAGE_PATH`) is not read yet.
   templates, for the digest events, the grouping corpus and a display corpus of odd shapes (threads, the SDK's `_meta`
   trimming annotations incl. malformed ones, sourcemap images incl. uploaded ones, log entries). Events on which
   upstream's view fails (a 500; we show what we can) are counted, not compared.
-- `admin.sh`: team, project and membership management. A scenario of ~100 steps (creating, editing and deleting teams
+- `admin.sh`: team, project and membership management. A scenario of ~170 steps (creating, editing and deleting teams
   and projects, joining and leaving, inviting existing and new users, member settings, answering invitations, new
   users setting their password, messaging services with test messages, signing up, confirming the address, password
   resets, preferences and password changes, the users admin, auth tokens, counts, settings, system warnings (incl.
-  messages from phoning home, by version, and silencing them) and where "home" goes, plus what must be refused and what lists show) goes through upstream's own views and through our API, on databases set up alike, once with email and once
-  without (invite links instead, and signing up without confirming the address). After every step the outcome (incl. each form's error messages), invite links and
-  a snapshot of users, teams, projects, memberships, tokens and messaging services must agree; at the end, the
-  emails (invitations, confirmations, password resets) and test messages sent.
+  messages from phoning home, by version, and silencing them) and where "home" goes, plus what must be refused and
+  what lists show) goes through upstream's own views and through our API, on databases set up alike, once with email
+  and once without (invite links instead, and signing up without confirming the address). After every step the
+  outcome (incl. each form's error messages), invite links and a snapshot of users, teams, projects, memberships,
+  tokens, messaging services and remote messages must agree; at the end, the emails (invitations, confirmations,
+  password resets) and test messages sent.
 - `rest_api.sh`: upstream's REST API (`/api/canonical/0/`) over HTTP. The digest steps, a display corpus, the
   grouping corpus and issues and events enough to paginate are replayed into a database, with users, teams, projects
   and auth tokens of every kind (service, personal, project-bound, expired, of inactive users or deleted projects,
@@ -96,19 +107,15 @@ API), issue actions (single and bulk, incl. deletion), the issue lists' tabs and
 history and comments, groupings, event navigation, sparkline counts, events shown as upstream shows them), team,
 project and membership management (invitations by email or link, new users setting their password, messaging
 services with test messages, project deletion), accounts (signup with email confirmation, password reset,
-preferences, changing the password), the installation's admin (users, auth tokens, counts, settings, system
-warnings), phoning home (`PHONEHOME`) and the messages it brings back, upstream's REST API with auth tokens (`/api/canonical/0/`, its schema and Swagger UI), and the database
-bootstrap/version check. bugsink-rs can take over an upstream installation: ingestion, digestion, and upstream's UI
-as a client-side React app (`frontend/`) on the UI API.
+preferences, changing the password), the installation's admin (users, auth tokens, counts, settings, system and
+project warnings), phoning home and the messages it brings back, upstream's REST API with auth tokens
+(`/api/canonical/0/`, its schema and Swagger UI), and the database bootstrap/version check. bugsink-rs can take over
+an upstream installation: ingestion, digestion, and upstream's UI as a client-side React app (`frontend/`) on the UI
+API.
 
-### Not yet ported (upstream behaviour missing)
-
-Nothing beyond the optional extras below. Every page is ported to the frontend (see `frontend/README.md`), checked
-against the API's responses and, in a headless browser, side by side with upstream's pages on the same database.
-
-Phoning home sends what upstream's message has, as far as it applies to bugsink-rs: the version is the upstream
-version whose schema it runs on (2.6.3), the Python version is null, and the runtime (machine, Docker or not) is
-bugsink-rs's. `bugsink print-phonehome` prints it; `PHONEHOME=false` turns it off.
+Nothing of upstream is left to port beyond the optional extras below. Every page is ported to the frontend (see
+`frontend/README.md`), checked against the API's responses and, in a headless browser, side by side with upstream's
+pages on the same database.
 
 ### Skipped on purpose (optional extras)
 
@@ -117,9 +124,9 @@ are marked `SKIPPED(parity)`.
 
 - **Sourcemap and debug-file uploads** (`sentry-cli`'s endpoints: `/api/0/` and its `chunk-upload`,
   `artifactbundle/assemble`, `difs/assemble`) and applying them to stack traces (the event details' "Sourcemap IDs"
-  do say which were uploaded, e.g. by upstream before the switch). Needed if CI runs `sentry-cli sourcemaps upload` or `debug-files upload`: those calls fail here
-  (which can fail a build step), and JavaScript stack traces stay minified (frames only get the "no sourcemap for
-  debug_id" hint).
+  do say which were uploaded, e.g. by upstream before the switch). Needed if CI runs `sentry-cli sourcemaps upload`
+  or `debug-files upload`: those calls fail here (which can fail a build step), and JavaScript stack traces stay
+  minified (frames only get the "no sourcemap for debug_id" hint).
 - **Minidumps** (`/minidump/`, `event.minidump` attachments): native crash reports (C/C++, Electron, game engines)
   aren't processed.
 - **File-based event storage** (`FILE_EVENT_STORAGE...`; upstream's default keeps events in the database): such
@@ -131,8 +138,8 @@ are marked `SKIPPED(parity)`.
 - **Upstream's other management commands** (`vacuum`'s files, old-events, ingest-dir and orphaned-issues parts,
   `delete_old_events`, `cleanup_*`, `make_consistent`, `create_auth_token`, ...). Retention and eviction happen
   during digest as upstream's do. We have `migrate`, `create-project`, `create-superuser`, `send-welcome-email`,
-  `vacuum` (deleted issues, eventless issue tags, tags), `print-phonehome`, `serve` and `worker`; `/health/ready` (upstream's readiness
-  probe) and `/api/v1/health` (which also checks the database).
+  `vacuum` (deleted issues, eventless issue tags, tags), `print-phonehome`, `serve` and `worker`; `/health/ready`
+  (upstream's readiness probe) and `/api/v1/health` (which also checks the database).
 
 To check whether an existing installation uses the storage and uploads (all three 0: it doesn't):
 
@@ -185,7 +192,8 @@ bugsink-server/        the `bugsink` binary (src/main.rs: CLI, config, HTTP, in-
   src/forms.rs         Django's form validation: errors by field, its messages
   src/memberships.rs   members, invitations (email or link), joining and leaving; who may do what
   src/alerts/setup.rs  messaging services: config forms (Django's URLField/URLValidator), test messages
-  src/installation.rs  users admin, auth tokens, counts, system warnings, home
+  src/installation.rs  users admin, auth tokens, counts, system and project warnings, home
+  src/phonehome.rs     phoning home to bugsink.com (a job) and the remote messages it brings back
   src/rest.rs          /api/canonical/0/...: upstream's REST API (bearer auth tokens, DRF's errors, fields and cursor
                        pagination in rest/; the OpenAPI schema and Swagger UI page are upstream's, in rest/schema/)
   src/event_display.rs an event as upstream's event pages show it (stack traces, details, breadcrumbs)
@@ -203,6 +211,9 @@ transaction, project row locked) -> rows read by `api` -> frontend.
 
 ## Running
 
+Needs PostgreSQL (tested with 17). Building needs Rust 1.94+ and Node `^20.19.0 || >=22.12.0`; the parity scripts
+need docker.
+
 ```sh
 docker compose up -d                       # Postgres 17 on :5432
 cp .env.example .env && set -a && . ./.env && set +a
@@ -216,7 +227,8 @@ cargo run -- serve                         # HTTP on 127.0.0.1:8000 + 4 workers,
 `bugsink worker` runs workers without HTTP, for scaling digestion separately.
 
 Or as a container: the `Dockerfile` builds the frontend and a static (musl) binary into a `scratch` image that runs
-`serve` on 0.0.0.0:8000 (any other command: append it to `docker run`).
+`serve` on 0.0.0.0:8000 (any other command: append it to `docker run`). `LICENSE` and `THIRD-PARTY-NOTICES.md` are in
+its root.
 
 ```sh
 docker build -t bugsink-rs .
@@ -254,6 +266,12 @@ ones); otherwise the API returns the links to pass on.
 Run `bugsink vacuum` regularly (e.g. daily from cron, like upstream's `bugsink-manage vacuum`): evicted events leave
 issue tags and tag values behind, which only it cleans up.
 
+Like upstream, bugsink-rs phones home: once an hour (and on `serve`'s start), bugsink.com gets upstream's message about
+the installation, and superusers see the notices it answers with (e.g. security fixes) until they dismiss them. The
+message is what upstream's has, as far as it applies: the version is the upstream version whose schema bugsink-rs runs
+on (2.6.3), the Python version is null, and the runtime (machine, Docker or not) is bugsink-rs's. `bugsink
+print-phonehome` prints it; `PHONEHOME=false` turns it off (set it for development and test runs).
+
 `serve` binds to localhost by default; set `BUGSINK_BIND=0.0.0.0:8000` to expose it. `BASE_URL` also decides the UI
 API's CSRF origin check (requests from another origin are refused) and, when it is https, makes the session cookie
 `Secure`.
@@ -266,4 +284,7 @@ API's CSRF origin check (requests from another origin are refused) and, when it 
 2. Diff upstream's `ingest/`, `issues/`, `events/`, `releases/`, `tags/`, `alerts/`, `phonehome/`, `sentry/`, `users/`
    and `projects/` (access rules), and Django's password hasher, between the versions and port the changes.
    Re-export the User-Agent data with `tools/parity/export_ua_regexes.py`.
-3. Run all parity scripts.
+3. Set `UPSTREAM_VERSION` in `bugsink-db/src/lib.rs` (it is also the version phoning home reports).
+4. Run all parity scripts.
+5. Release (see "Versions"): a new upstream line (e.g. 2.7) makes ours `2.7.0`; a newer upstream release in the same
+   line keeps `MAJOR.MINOR` and takes the next patch number.
