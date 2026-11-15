@@ -7,8 +7,8 @@ use bugsink_server::user_agent::contexts_enriched_with_user_agent;
 use serde_json::Value;
 
 fn main() {
-    for line in std::io::stdin().lock().lines() {
-        let data: Value = serde_json::from_str(&line.unwrap()).unwrap();
-        println!("{}", contexts_enriched_with_user_agent(&data));
-    }
+  for line in std::io::stdin().lock().lines() {
+    let data: Value = serde_json::from_str(&line.unwrap()).unwrap();
+    println!("{}", contexts_enriched_with_user_agent(&data));
+  }
 }
